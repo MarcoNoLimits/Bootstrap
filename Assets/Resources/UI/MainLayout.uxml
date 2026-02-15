@@ -1,0 +1,32 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements" editor-extension-mode="False">
+    <Style src="project://database/Assets/ResourcesUI/Styles.uss?fileID=7433441132597879392&amp;guid=3472e228a666645478a446e7f8887783&amp;type=3#Styles" />
+    <ui:VisualElement name="glass-container" class="glass-panel">
+        <ui:VisualElement name="main-content" class="row">
+            <ui:VisualElement class="center-panel">
+                <ui:Label text="ASR" class="header-title" />
+                <ui:VisualElement name="waveform-visualizer" class="waveform" />
+                <ui:Label text="Automatic Speech Recognition" class="sub-title" />
+                <ui:VisualElement class="button-row">
+                    <ui:Button name="btn-start" text="Start" class="primary-btn" />
+                    <ui:Button name="btn-settings" text="Settings" class="secondary-btn" />
+                </ui:VisualElement>
+                <ui:VisualElement class="hand-hints">
+                    <ui:Label text="☝ Push to Select" />
+                </ui:VisualElement>
+            </ui:VisualElement>
+            <ui:VisualElement class="right-panel">
+                <ui:TextField name="search-bar" placeholder="Search Settings..." />
+                <ui:ScrollView>
+                    <ui:Button text="Language" class="nav-item" />
+                    <ui:Button text="Translation" class="nav-item" />
+                    <ui:Button text="Accessibility" class="nav-item" />
+                    <ui:Button text="Privacy" class="nav-item" />
+                </ui:ScrollView>
+            </ui:VisualElement>
+        </ui:VisualElement>
+        <ui:VisualElement class="bottom-bar">
+            <ui:Label text="Vol" class="icon-placeholder" />
+            <ui:Label text="Mic" class="icon-placeholder" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>
