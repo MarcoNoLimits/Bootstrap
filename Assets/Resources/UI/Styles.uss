@@ -1,10 +1,12 @@
 .glass-panel {
     width: 800px;
     height: 500px;
-    background-color: rgba(10, 25, 50, 0.65); /* Deep Blue Translucent */
+    /* CHANGE 1: Use a brighter Blue/Cyan, barely transparent */
+    background-color: rgba(100, 100, 100, 1); 
     border-radius: 20px;
-    border-width: 2px;
-    border-color: rgba(255, 255, 255, 0.3);
+    /* CHANGE 2: Thicker, brighter border to frame the content */
+    border-color: white;
+    border-width: 5px;
     padding: 20px;
     justify-content: space-between;
 }
@@ -22,9 +24,10 @@
 
 .right-panel {
     width: 250px;
-    background-color: rgba(0, 0, 0, 0.3);
-    border-left-width: 1px;
-    border-left-color: rgba(255, 255, 255, 0.1);
+    /* CHANGE 3: Brighter secondary panel */
+    background-color: rgba(255, 255, 255, 0.1); 
+    border-left-width: 2px;
+    border-left-color: rgba(255, 255, 255, 0.5);
     padding: 10px;
 }
 
