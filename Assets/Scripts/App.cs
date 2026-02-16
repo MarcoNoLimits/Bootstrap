@@ -7,7 +7,7 @@ public class App : MonoBehaviour
     private Camera _mainCam;
     
     // --- SETTINGS ---
-    private float _distance = 0.85f;      // How far away (Meters)
+    private float _distance = 2.0f;      // How far away (Meters)
     private float _smoothSpeed = 4.0f;    // How fast it catches up to you
     
     // UI DIMENSIONS (Must match your USS/CSS)
@@ -71,9 +71,9 @@ public class App : MonoBehaviour
         _mainUI = new GameObject("MainUI");
         
         // 1. Setup Render Texture
-        // Higher resolution for crisp text
-        int webWidth = 1280;
-        int webHeight = 800;
+        // Match the UI dimensions exactly so it fills the quad
+        int webWidth = 800;
+        int webHeight = 500;
         RenderTexture rt = new RenderTexture(webWidth, webHeight, 24);
         rt.name = "UIRenderTexture";
 
@@ -87,9 +87,6 @@ public class App : MonoBehaviour
         runtimeSettings.clearColor = true;
 
         // 3. Setup UIDocument
-        // We create a child object for the UIDocument so it doesn't conflict with the Quad's transform logic if needed
-        // but actually, UIDocument with TargetTexture doesn't render to a GameObject, it renders to the Texture.
-        // So the UIDocument component acts as the "Server" for the texture.
         GameObject uiLogicObject = new GameObject("UILogic");
         uiLogicObject.transform.SetParent(_mainUI.transform, false);
         var uiDoc = uiLogicObject.AddComponent<UIDocument>();
@@ -101,10 +98,16 @@ public class App : MonoBehaviour
         quad.transform.SetParent(_mainUI.transform, false);
         quad.name = "UIQuad";
 
-        // Remove the default collider and add a BoxCollider for thickness if preferred, 
-        // or keep MeshCollider. MeshCollider is fine for raycasts.
-        // For HoloLens interaction, you usually want a BoxCollider backing.
-        // Let's stick to the default MeshCollider for now, but ensure layer is correct if needed.
+        // Replace MeshCollider with BoxCollider for better XRI detection
+        Collider meshCollider = quad.GetComponent<Collider>();
+        if (meshCollider != null) Destroy(meshCollider);
+        
+        BoxCollider boxCol = quad.AddComponent<BoxCollider>();
+        boxCol.size = new Vector3(1, 1, 0.05f); // Thin box
+        
+        // Add rudimentary interaction support? 
+        // For now, just getting visuals back is priority #1.
+        // We will add the bridge script in the next step.
 
         // 5. Material Setup
         // Unlit/Transparent is standard. 
@@ -112,20 +115,19 @@ public class App : MonoBehaviour
         mat.mainTexture = rt;
         quad.GetComponent<Renderer>().material = mat;
 
-        // 6. Scale the Quad to match Aspect Ratio and desired physical size
-        // We want the width to be about 0.8 meters (match _scale * _uiWidth logic roughly)
-        // _uiWidth = 800, _scale = 0.001 => 0.8m
+        // 6. Scale the Quad to match physical size
+        // _uiWidth = 800, _scale = 0.001 => 0.8m width
+        // _uiHeight = 500 => 0.5m height
         float physicalWidth = _uiWidth * _scale;
         float physicalHeight = _uiHeight * _scale;
         
-        // However, we are now using 1280x800 texture. 
-        // Aspect Ratio = 1.6
-        // Let's keep physical width at 0.8m.
-        // Height = 0.8m / 1.6 = 0.5m.
-        
         quad.transform.localScale = new Vector3(physicalWidth, physicalHeight, 1f);
 
-        // 7. Cleanup
-        // No need for debug dot anymore as the Quad is visible
+        // 7. Interaction Bridge
+        // Automatically attach the input bridge so we don't depend on manual setup
+        var bridge = _mainUI.AddComponent<WorldUIInputBridge>();
+        bridge.uiDoc = uiDoc;
+        bridge.renderTexture = rt;
+        bridge.targetCollider = boxCol;
     }
 }
