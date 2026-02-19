@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.UIElements;
+using UnityEngine.XR.Interaction.Toolkit;
 
 public class App : MonoBehaviour
 {
@@ -129,5 +130,33 @@ public class App : MonoBehaviour
         bridge.uiDoc = uiDoc;
         bridge.renderTexture = rt;
         bridge.targetCollider = boxCol;
+        
+        // 8. XR Interaction Setup
+        // Add XRSimpleInteractable so hand rays can "Select" (Click) the Quad
+        var interactable = _mainUI.AddComponent<XRSimpleInteractable>();
+        interactable.colliders.Clear();
+        interactable.colliders.Add(boxCol);
+        
+        // Wire up the event
+        interactable.selectEntered.AddListener(bridge.OnSelectEntered);
+        interactable.hoverEntered.AddListener(bridge.OnHoverEntered);
+        interactable.hoverExited.AddListener(bridge.OnHoverExited);
+
+        // 9. Test Button Action
+        // Find the "Settings" button and add a debug action
+        var root = uiDoc.rootVisualElement;
+        var btnSettings = root.Q<Button>("btn-settings");
+        if (btnSettings != null)
+        {
+            btnSettings.clicked += () => 
+            {
+                Debug.Log("Settings Button Clicked via Hand Interaction!");
+                // Text will be overridden by logger
+            };
+
+            // 10. Debug Hand Tracking
+            var logger = _mainUI.AddComponent<XRDebugLogger>();
+            logger.debugButton = btnSettings;
+        }
     }
 }
