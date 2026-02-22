@@ -17,19 +17,27 @@ public class App : MonoBehaviour
     private float _uiHeight = 500f;
     private float _scale = 0.001f;        // The scale we apply to the object
 
+    private RenderTexture _uiRenderTexture;
+
     private void Awake()
     {
-        InitializeUI();
+        if (GameObject.FindObjectOfType<WizardOfOz.AppBootstrap>() != null)
+        {
+            Debug.LogWarning("[App] AppBootstrap detected. KILLING legacy UI to clear the view.");
+            this.gameObject.SetActive(false);
+            return;
+        }
     }
 
     private void Start()
     {
         _mainCam = Camera.main;
+        InitializeUI();
         
-        // Initial jump to front (so you don't have to wait for it to fly in)
+        // Initial jump to front
         if (_mainCam != null)
         {
-            UpdatePosition(true); // true = instant snap
+            UpdatePosition(true);
         }
     }
 
@@ -72,17 +80,15 @@ public class App : MonoBehaviour
         _mainUI = new GameObject("MainUI");
         
         // 1. Setup Render Texture
-        // Match the UI dimensions exactly so it fills the quad
         int webWidth = 800;
         int webHeight = 500;
-        RenderTexture rt = new RenderTexture(webWidth, webHeight, 24);
-        rt.name = "UIRenderTexture";
+        _uiRenderTexture = new RenderTexture(webWidth, webHeight, 24);
+        _uiRenderTexture.name = "UIRenderTexture";
 
         // 2. Setup Panel Settings
-        // We load the default, INSTANTIATE it to avoid changing the asset, and assign texture
         var originalSettings = Resources.Load<PanelSettings>("UI/DefaultPanelSettings");
         PanelSettings runtimeSettings = Instantiate(originalSettings);
-        runtimeSettings.targetTexture = rt;
+        runtimeSettings.targetTexture = _uiRenderTexture;
         runtimeSettings.scaleMode = PanelScaleMode.ConstantPixelSize; // Maps 1:1 to texture
         runtimeSettings.scale = 1.0f;
         runtimeSettings.clearColor = true;
@@ -113,7 +119,7 @@ public class App : MonoBehaviour
         // 5. Material Setup
         // Unlit/Transparent is standard. 
         Material mat = new Material(Shader.Find("Unlit/Transparent"));
-        mat.mainTexture = rt;
+        mat.mainTexture = _uiRenderTexture;
         quad.GetComponent<Renderer>().material = mat;
 
         // 6. Scale the Quad to match physical size
@@ -125,10 +131,9 @@ public class App : MonoBehaviour
         quad.transform.localScale = new Vector3(physicalWidth, physicalHeight, 1f);
 
         // 7. Interaction Bridge
-        // Automatically attach the input bridge so we don't depend on manual setup
         var bridge = _mainUI.AddComponent<WorldUIInputBridge>();
         bridge.uiDoc = uiDoc;
-        bridge.renderTexture = rt;
+        bridge.renderTexture = _uiRenderTexture;
         bridge.targetCollider = boxCol;
         
         // 8. XR Interaction Setup
@@ -157,6 +162,15 @@ public class App : MonoBehaviour
             // 10. Debug Hand Tracking
             var logger = _mainUI.AddComponent<XRDebugLogger>();
             logger.debugButton = btnSettings;
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (_uiRenderTexture != null)
+        {
+            _uiRenderTexture.Release();
+            Destroy(_uiRenderTexture);
         }
     }
 }
