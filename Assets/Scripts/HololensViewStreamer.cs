@@ -43,21 +43,13 @@ public class HololensViewStreamer : MonoBehaviour
   <title>HoloLens Live View</title>
   <link rel=""preconnect"" href=""https://fonts.googleapis.com"">
   <link rel=""preconnect"" href=""https://fonts.gstatic.com"" crossorigin>
-  <link href=""https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap"" rel=""stylesheet"">
+  <link href=""https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap"" rel=""stylesheet"">
   <style>
-    :root {
-      --bg: #0d1117;
-      --surface: rgba(30, 36, 45, 0.85);
-      --border: rgba(255, 255, 255, 0.12);
-      --accent: rgba(0, 200, 255, 0.5);
-      --text: #e6edf3;
-      --muted: #8b949e;
-    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'JetBrains Mono', monospace;
-      background: var(--bg);
-      color: var(--text);
+      font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0d1117;
+      color: rgba(255,255,255,0.98);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
@@ -69,11 +61,11 @@ public class HololensViewStreamer : MonoBehaviour
     .container {
       width: 100%;
       max-width: 1100px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 20px;
+      background: rgba(14, 42, 78, 0.58);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 24px;
       padding: 28px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      box-shadow: 0 16px 48px rgba(0,0,0,0.2);
     }
     header {
       display: flex;
@@ -85,26 +77,26 @@ public class HololensViewStreamer : MonoBehaviour
     }
     h1 {
       font-size: 1.5rem;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      color: var(--text);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: rgba(255,255,255,0.98);
     }
     .badge {
-      background: var(--accent);
-      color: var(--bg);
-      padding: 6px 12px;
-      border-radius: 8px;
-      font-size: 0.75rem;
+      background: rgba(50, 120, 200, 0.6);
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 10px;
+      font-size: 0.8rem;
       font-weight: 600;
     }
     .viewer {
       position: relative;
       width: 100%;
       aspect-ratio: 16/9;
-      background: #000;
-      border-radius: 12px;
+      background: rgba(0,0,0,0.3);
+      border-radius: 14px;
       overflow: hidden;
-      border: 1px solid var(--border);
+      border: 1px solid rgba(255, 255, 255, 0.2);
     }
     .viewer img {
       width: 100%;
@@ -120,17 +112,19 @@ public class HololensViewStreamer : MonoBehaviour
       justify-content: center;
       flex-direction: column;
       gap: 12px;
-      color: var(--muted);
-      font-size: 0.9rem;
+      color: rgba(235, 242, 255, 0.7);
+      font-size: 0.95rem;
+      font-weight: 500;
     }
     .viewer .placeholder.hidden { display: none; }
     .status {
       margin-top: 16px;
-      font-size: 0.8rem;
-      color: var(--muted);
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: rgba(220, 235, 255, 0.88);
     }
-    .status.live { color: #3fb950; }
-    .status.error { color: #f85149; }
+    .status.live { color: rgba(100, 220, 150, 0.95); }
+    .status.error { color: rgba(248, 81, 73, 0.9); }
   </style>
 </head>
 <body>
