@@ -78,7 +78,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f928d0d73a35f294fbe357ca17aa3547, type: 3}
   m_Name: MicrosoftHandInteraction Standalone
   m_EditorClassIdentifier: 
-  m_enabled: 1
+  m_enabled: 0
   nameUi: Microsoft Hand Interaction Profile
   version: 0.0.1
   featureIdInternal: com.unity.openxr.feature.input.handtracking
@@ -203,7 +203,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3f8ec2975f18d5e479159feb34b4dc86, type: 3}
   m_Name: MixedRealityFeaturePlugin Standalone
   m_EditorClassIdentifier: 
-  m_enabled: 1
+  m_enabled: 0
   nameUi: Mixed Reality Features
   version: 1.11.2
   featureIdInternal: com.microsoft.openxr.feature.hololens
@@ -256,8 +256,6 @@ MonoBehaviour:
   - {fileID: 2995889591403145433}
   - {fileID: -3641856769387421029}
   - {fileID: 4164662044324409098}
-  - {fileID: -9067792006244585774}
-  - {fileID: 3927544498229799443}
   - {fileID: -5206017440119386442}
   - {fileID: 5995519206504513417}
   - {fileID: -3803693235276729306}
@@ -265,16 +263,12 @@ MonoBehaviour:
   - {fileID: 6349976840686908076}
   - {fileID: -8517903538436925194}
   - {fileID: 8442053136333868376}
-  - {fileID: -5884135691277435673}
   - {fileID: -8195644710922842019}
-  - {fileID: 872475576854767282}
   - {fileID: -9045746442219358302}
   - {fileID: 7878766018516456526}
   - {fileID: -5952897176359577223}
   - {fileID: 3988141636874397665}
   - {fileID: 199977840038285944}
-  - {fileID: -2069070934416137657}
-  - {fileID: -2306218386304226975}
   m_renderMode: 1
   m_autoColorSubmissionMode: 1
   m_colorSubmissionModes:
@@ -535,7 +529,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2d2e2731103cdda44af77955a0b4814c, type: 3}
   m_Name: AppRemotingPlugin Standalone
   m_EditorClassIdentifier: 
-  m_enabled: 1
+  m_enabled: 0
   nameUi: Holographic Remoting remote app
   version: 1.11.2
   featureIdInternal: com.microsoft.openxr.feature.appremoting
@@ -575,7 +569,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9f34c86d1a130cc45a438373e1e8a4fc, type: 3}
   m_Name: PlayModeRemotingPlugin Standalone
   m_EditorClassIdentifier: 
-  m_enabled: 1
+  m_enabled: 0
   nameUi: Holographic Remoting for Play Mode
   version: 1.11.2
   featureIdInternal: com.microsoft.openxr.feature.playmoderemoting
@@ -811,8 +805,6 @@ MonoBehaviour:
   - {fileID: -2810434933977118135}
   - {fileID: -6927017890985751485}
   - {fileID: -408797407454129802}
-  - {fileID: 442790862817087280}
-  - {fileID: 7678532932217076919}
   - {fileID: -3870166784474298774}
   - {fileID: -9123324765407204257}
   - {fileID: 2755478492804506388}
@@ -820,14 +812,11 @@ MonoBehaviour:
   - {fileID: -2180313640824758274}
   - {fileID: -80740056630738493}
   - {fileID: -5880812208573571896}
-  - {fileID: -3812264202007450185}
-  - {fileID: -3983771241647147093}
   - {fileID: 7569228985624982796}
   - {fileID: 6816006434502952932}
   - {fileID: -7886736639319931519}
   - {fileID: 4024181963651740896}
   - {fileID: -7598791996023652363}
-  - {fileID: -2892390496779264058}
   m_renderMode: 1
   m_autoColorSubmissionMode: 1
   m_colorSubmissionModes:
@@ -848,7 +837,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b3cf79659a011bd419c7a2a30eb74e9a, type: 3}
   m_Name: EyeGazeInteraction Standalone
   m_EditorClassIdentifier: 
-  m_enabled: 1
+  m_enabled: 0
   nameUi: Eye Gaze Interaction Profile
   version: 0.0.1
   featureIdInternal: com.unity.openxr.feature.input.eyetracking

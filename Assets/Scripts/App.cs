@@ -13,7 +13,7 @@ public class App : MonoBehaviour
     
     // UI DIMENSIONS (Must match your USS/CSS)
     // We need these to center the window correctly.
-    private float _uiWidth = 800f; 
+    private float _uiWidth = 920f; 
     private float _uiHeight = 500f;
     private float _scale = 0.001f;        // The scale we apply to the object
 
@@ -73,7 +73,7 @@ public class App : MonoBehaviour
         
         // 1. Setup Render Texture
         // Match the UI dimensions exactly so it fills the quad
-        int webWidth = 800;
+        int webWidth = 920;
         int webHeight = 500;
         RenderTexture rt = new RenderTexture(webWidth, webHeight, 24);
         rt.name = "UIRenderTexture";
@@ -142,9 +142,31 @@ public class App : MonoBehaviour
         interactable.hoverEntered.AddListener(bridge.OnHoverEntered);
         interactable.hoverExited.AddListener(bridge.OnHoverExited);
 
-        // 9. Test Button Action
-        // Find the "Settings" button and add a debug action
+        // 9. Brand logo and bottom-bar icons: add images to Assets/Resources/UI/
         var root = uiDoc.rootVisualElement;
+        var brandLogo = root.Q<VisualElement>("brand-logo");
+        if (brandLogo != null)
+        {
+            var logoTexture = Resources.Load<Texture2D>("UI/HoloAssistLogo");
+            if (logoTexture != null)
+                brandLogo.style.backgroundImage = Background.FromTexture2D(logoTexture);
+        }
+
+        SetBottomBarIcon(root, "icon-volume", "UI/volume");
+        SetBottomBarIcon(root, "icon-microphone", "UI/microphone");
+        SetBottomBarIcon(root, "icon-refresh", "UI/refresh");
+
+        SetIcon(root, "icon-search", "UI/search");
+        SetIcon(root, "nav-icon-asr", "UI/ASR");
+        SetIcon(root, "nav-icon-translation", "UI/language");
+        SetIcon(root, "nav-icon-sign-language", "UI/sign-language");
+        SetIcon(root, "nav-icon-notifications", "UI/notification");
+        SetIcon(root, "nav-icon-privacy", "UI/privacy");
+        SetIcon(root, "nav-icon-help", "UI/help");
+        SetIcon(root, "nav-icon-about", "UI/about");
+
+        // 10. Test Button Action
+        // Find the "Settings" button and add a debug action
         var btnSettings = root.Q<Button>("btn-settings");
         if (btnSettings != null)
         {
@@ -154,9 +176,29 @@ public class App : MonoBehaviour
                 // Text will be overridden by logger
             };
 
-            // 10. Debug Hand Tracking
+            // 11. Debug Hand Tracking
             var logger = _mainUI.AddComponent<XRDebugLogger>();
             logger.debugButton = btnSettings;
         }
+    }
+
+    private static void SetBottomBarIcon(VisualElement root, string elementName, string resourcePath)
+    {
+        SetIcon(root, elementName, resourcePath);
+    }
+
+    private static void SetIcon(VisualElement root, string elementName, string resourcePath)
+    {
+        var el = root.Q<VisualElement>(elementName);
+        if (el == null) return;
+        var vectorImage = Resources.Load<VectorImage>(resourcePath);
+        if (vectorImage != null)
+        {
+            el.style.backgroundImage = new StyleBackground(Background.FromVectorImage(vectorImage));
+            return;
+        }
+        var texture = Resources.Load<Texture2D>(resourcePath);
+        if (texture != null)
+            el.style.backgroundImage = Background.FromTexture2D(texture);
     }
 }
