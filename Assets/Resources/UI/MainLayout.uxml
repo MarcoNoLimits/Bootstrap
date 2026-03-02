@@ -3,30 +3,64 @@
     <ui:VisualElement name="glass-container" class="glass-panel">
         <ui:VisualElement name="main-content" class="row">
             <ui:VisualElement class="center-panel">
-                <ui:Label text="ASR" class="header-title" />
-                <ui:VisualElement name="waveform-visualizer" class="waveform" />
-                <ui:Label text="Automatic Speech Recognition" class="sub-title" />
-                <ui:VisualElement class="button-row">
-                    <ui:Button name="btn-start" text="Start" class="primary-btn" />
-                    <ui:Button name="btn-settings" text="Settings" class="secondary-btn" />
+                <ui:VisualElement class="center-content">
+                    <ui:VisualElement class="brand-row">
+                        <ui:VisualElement name="brand-logo" class="brand-logo" />
+                        <ui:Label text="HOLOASSIST" class="brand-name" />
+                    </ui:VisualElement>
+                    <ui:Label text="Conversation Companion" class="welcome-title" />
+                    <ui:Label text="Intelligent Real-Time Communication Assistance." class="sub-title" />
+                    <ui:VisualElement class="button-row">
+                        <ui:Button name="btn-start" text="Start" class="primary-btn" />
+                        <ui:Button name="btn-settings" text="Settings" class="secondary-btn" />
+                    </ui:VisualElement>
                 </ui:VisualElement>
-                <ui:VisualElement class="hand-hints">
-                    <ui:Label text="☝ Push to Select" />
+                <ui:VisualElement class="bottom-bar">
+                    <ui:Label text="☰" class="icon-placeholder icon-menu" />
+                    <ui:VisualElement class="bottom-bar-icons">
+                        <ui:VisualElement name="icon-volume" class="bottom-bar-icon" />
+                        <ui:VisualElement name="icon-microphone" class="bottom-bar-icon" />
+                        <ui:VisualElement name="icon-refresh" class="bottom-bar-icon" />
+                    </ui:VisualElement>
                 </ui:VisualElement>
             </ui:VisualElement>
             <ui:VisualElement class="right-panel">
-                <ui:TextField name="search-bar" placeholder="Search Settings..." />
-                <ui:ScrollView>
-                    <ui:Button text="Language" class="nav-item" />
-                    <ui:Button text="Translation" class="nav-item" />
-                    <ui:Button text="Accessibility" class="nav-item" />
-                    <ui:Button text="Privacy" class="nav-item" />
+                <ui:VisualElement class="settings-header">
+                    <ui:VisualElement name="icon-search" class="settings-icon-img" />
+                    <ui:Label text="Settings" class="settings-label" />
+                </ui:VisualElement>
+                <ui:TextField name="search-bar" placeholder="Search Settings..." class="search-field" />
+                <ui:ScrollView class="nav-scroll">
+                    <ui:VisualElement class="nav-item-row">
+                        <ui:VisualElement name="nav-icon-asr" class="nav-icon-img" />
+                        <ui:Button text="ASR" class="nav-item" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="nav-item-row">
+                        <ui:VisualElement name="nav-icon-translation" class="nav-icon-img" />
+                        <ui:Button text="Translation" class="nav-item" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="nav-item-row">
+                        <ui:VisualElement name="nav-icon-sign-language" class="nav-icon-img" />
+                        <ui:Button text="Sign Language" class="nav-item" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="nav-item-row">
+                        <ui:VisualElement name="nav-icon-notifications" class="nav-icon-img" />
+                        <ui:Button text="Notifications" class="nav-item" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="nav-item-row">
+                        <ui:VisualElement name="nav-icon-privacy" class="nav-icon-img" />
+                        <ui:Button text="Privacy" class="nav-item" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="nav-item-row">
+                        <ui:VisualElement name="nav-icon-help" class="nav-icon-img" />
+                        <ui:Button text="Help" class="nav-item" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="nav-item-row">
+                        <ui:VisualElement name="nav-icon-about" class="nav-icon-img" />
+                        <ui:Button text="About" class="nav-item" />
+                    </ui:VisualElement>
                 </ui:ScrollView>
             </ui:VisualElement>
-        </ui:VisualElement>
-        <ui:VisualElement class="bottom-bar">
-            <ui:Label text="Vol" class="icon-placeholder" />
-            <ui:Label text="Mic" class="icon-placeholder" />
         </ui:VisualElement>
     </ui:VisualElement>
 </ui:UXML>

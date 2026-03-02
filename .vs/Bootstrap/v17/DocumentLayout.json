@@ -31,6 +31,7 @@
         {
           "DockedWidth": 200,
           "SelectedChildIndex": 0,
+          "SelectedChildIndex": 0,
           "Children": [
             {
               "$type": "Document",
