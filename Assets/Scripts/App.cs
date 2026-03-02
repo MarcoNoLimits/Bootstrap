@@ -202,29 +202,55 @@ public class App : MonoBehaviour
     private static void SetIcon(VisualElement root, string elementName, string resourcePath)
     {
         var el = root.Q<VisualElement>(elementName);
-        if (el == null) return;
-
-        // 1) Try VectorImage (for UI Toolkit vector assets)
-        var vectorImage = Resources.Load<VectorImage>(resourcePath);
-        if (vectorImage != null)
+        if (el == null)
         {
-            el.style.backgroundImage = new StyleBackground(Background.FromVectorImage(vectorImage));
+            Debug.LogWarning($"[UI] Element '{elementName}' not found in UXML.");
             return;
         }
 
-        // 2) Try Sprite (common when importing SVGs with the 2D Vector Graphics package)
-        var sprite = Resources.Load<Sprite>(resourcePath);
-        if (sprite != null)
+        // --- BULLETPROOF LOADING ---
+        // 1) Try to find a VectorImage first (UI Toolkit preference)
+        var vectorImages = Resources.LoadAll<VectorImage>(resourcePath);
+        if (vectorImages.Length > 0)
         {
-            el.style.backgroundImage = Background.FromSprite(sprite);
+            el.style.backgroundImage = new StyleBackground(Background.FromVectorImage(vectorImages[0]));
             return;
         }
 
-        // 3) Fallback to Texture2D (PNG/JPEG, etc.)
-        var texture = Resources.Load<Texture2D>(resourcePath);
-        if (texture != null)
+        // 2) Try to find a Sprite
+        var sprites = Resources.LoadAll<Sprite>(resourcePath);
+        if (sprites.Length > 0)
         {
-            el.style.backgroundImage = Background.FromTexture2D(texture);
+            // Prefer sprites with textures
+            foreach (var s in sprites)
+            {
+                if (s.texture != null)
+                {
+                    el.style.backgroundImage = Background.FromSprite(s);
+                    return;
+                }
+            }
+            // Fallback to textureless sprite (will likely warn but we've tried)
+            el.style.backgroundImage = Background.FromSprite(sprites[0]);
+            return;
         }
+
+        // 3) Try to find a Texture2D (PNG/Logo)
+        var textures = Resources.LoadAll<Texture2D>(resourcePath);
+        if (textures.Length > 0)
+        {
+            el.style.backgroundImage = Background.FromTexture2D(textures[0]);
+            return;
+        }
+
+        // 4) Diagnostics (if everything failed)
+        Object[] all = Resources.LoadAll(resourcePath);
+        if (all.Length == 0)
+        {
+            Debug.LogError($"[UI] Failed to find ANY resource at path: '{resourcePath}' for element '{elementName}'.");
+            return;
+        }
+
+        Debug.LogError($"[UI] Found {all.Length} assets at '{resourcePath}', but none are suitable (1st is {all[0].GetType().Name}). Check Import Settings.");
     }
 }

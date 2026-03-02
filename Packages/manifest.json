@@ -1,11 +1,13 @@
 {
   "dependencies": {
+    "com.microsoft.mixedreality.openxr": "file:MixedReality/com.microsoft.mixedreality.openxr-1.11.2.tgz",
     "com.unity.collab-proxy": "2.11.3",
     "com.unity.feature.development": "1.0.1",
     "com.unity.textmeshpro": "3.0.7",
     "com.unity.timeline": "1.7.7",
     "com.unity.ugui": "1.0.0",
     "com.unity.visualscripting": "1.9.4",
+    "com.unity.vectorgraphics": "2.0.0-preview.20",
     "com.unity.xr.interaction.toolkit": "2.6.5",
     "com.unity.xr.management": "4.5.4",
     "com.unity.xr.openxr": "1.14.3",

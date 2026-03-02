@@ -3,6 +3,10 @@
   "WorkspaceRootPath": "C:\\Users\\ahmed\\Bootstrap\\",
   "Documents": [
     {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\ahmed\\Bootstrap\\Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
       "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\ahmed\\Bootstrap\\Assets\\Scripts\\App.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Assets\\Scripts\\App.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
@@ -18,8 +22,21 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 4,
+          "SelectedChildIndex": 0,
           "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "AppRemotingSubsystem.cs",
+              "DocumentMoniker": "C:\\Users\\ahmed\\Bootstrap\\Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs",
+              "RelativeDocumentMoniker": "Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs",
+              "ToolTip": "C:\\Users\\ahmed\\Bootstrap\\Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs",
+              "RelativeToolTip": "Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs",
+              "ViewState": "AgIAAMQAAAAAAAAAAAD4v9EAAAB8AAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-27T13:32:08Z",
+              "EditorCaption": ""
+            },
             {
               "$type": "Bookmark",
               "Name": "ST:0:0:{56df62a4-05a3-4e5b-aa1a-99371ccfb997}"
@@ -34,7 +51,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 2,
               "Title": "Styles.uss",
               "DocumentMoniker": "C:\\Users\\ahmed\\Bootstrap\\Assets\\ResourcesUI\\Styles.uss",
               "RelativeDocumentMoniker": "Assets\\ResourcesUI\\Styles.uss",
@@ -45,7 +62,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 0,
+              "DocumentIndex": 1,
               "Title": "App.cs",
               "DocumentMoniker": "C:\\Users\\ahmed\\Bootstrap\\Assets\\Scripts\\App.cs",
               "RelativeDocumentMoniker": "Assets\\Scripts\\App.cs",

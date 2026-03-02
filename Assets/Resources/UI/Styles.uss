@@ -138,6 +138,7 @@
     height: 22px;
     margin-right: 10px;
     -unity-background-scale-mode: scale-to-fit;
+    -unity-background-image-tint-color: white;
 }
 
 .settings-label {
@@ -150,7 +151,15 @@
     margin-bottom: 24px;
     border-radius: 10px;
     border-color: rgba(255, 255, 255, 0.18);
-    background-color: rgba(255, 255, 255, 0.06);
+    background-color: rgba(0, 0, 0, 0.1); /* Slightly darker than sidebar for depth */
+}
+
+/* Ensure the internal text input is also transparent/styled */
+.search-field > .unity-text-field__input {
+    background-color: transparent;
+    border-width: 0;
+    color: white;
+    padding-left: 8px;
 }
 
 .nav-scroll {
@@ -160,9 +169,9 @@
 .nav-item-row {
     flex-direction: row;
     align-items: center;
-    margin-top: 4px;
-    padding-top: 6px;
-    padding-bottom: 6px;
+    margin-top: 2px;
+    padding-top: 2px;
+    padding-bottom: 2px;
     border-radius: 8px;
 }
 
@@ -174,20 +183,22 @@
 }
 
 .nav-icon-img {
-    width: 22px;
-    height: 22px;
-    margin-right: 12px;
+    width: 20px;
+    height: 20px;
+    margin-right: 8px;
     -unity-background-scale-mode: scale-to-fit;
+    -unity-background-image-tint-color: white; /* Ensure icons aren't blacked out */
 }
 
 .nav-item {
     flex-grow: 1;
     background-color: transparent;
     color: rgba(255, 255, 255, 0.95);
-    font-size: 17px;
+    font-size: 14px;
     border-width: 0;
     align-self: stretch;
     -unity-text-align: middle-left;
+    padding-left: 0;
 }
 
 .nav-item:hover {
@@ -223,6 +234,7 @@
     margin-left: 16px;
     margin-right: 16px;
     -unity-background-scale-mode: scale-to-fit;
+    -unity-background-image-tint-color: white;
 }
 
 .icon-placeholder {
