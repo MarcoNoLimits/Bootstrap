@@ -147,9 +147,21 @@ public class App : MonoBehaviour
         var brandLogo = root.Q<VisualElement>("brand-logo");
         if (brandLogo != null)
         {
+            // Try Texture2D (e.g. PNG) first
             var logoTexture = Resources.Load<Texture2D>("UI/HoloAssistLogo");
             if (logoTexture != null)
+            {
                 brandLogo.style.backgroundImage = Background.FromTexture2D(logoTexture);
+            }
+            else
+            {
+                // Fallback to Sprite (e.g. imported SVG as Sprite)
+                var logoSprite = Resources.Load<Sprite>("UI/HoloAssistLogo");
+                if (logoSprite != null)
+                {
+                    brandLogo.style.backgroundImage = Background.FromSprite(logoSprite);
+                }
+            }
         }
 
         SetBottomBarIcon(root, "icon-volume", "UI/volume");
@@ -191,14 +203,28 @@ public class App : MonoBehaviour
     {
         var el = root.Q<VisualElement>(elementName);
         if (el == null) return;
+
+        // 1) Try VectorImage (for UI Toolkit vector assets)
         var vectorImage = Resources.Load<VectorImage>(resourcePath);
         if (vectorImage != null)
         {
             el.style.backgroundImage = new StyleBackground(Background.FromVectorImage(vectorImage));
             return;
         }
+
+        // 2) Try Sprite (common when importing SVGs with the 2D Vector Graphics package)
+        var sprite = Resources.Load<Sprite>(resourcePath);
+        if (sprite != null)
+        {
+            el.style.backgroundImage = Background.FromSprite(sprite);
+            return;
+        }
+
+        // 3) Fallback to Texture2D (PNG/JPEG, etc.)
         var texture = Resources.Load<Texture2D>(resourcePath);
         if (texture != null)
+        {
             el.style.backgroundImage = Background.FromTexture2D(texture);
+        }
     }
 }
