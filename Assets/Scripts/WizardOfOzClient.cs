@@ -88,7 +88,7 @@ public class WizardOfOzClient : MonoBehaviour
         _mainUIRoot = new GameObject("TranslationPanel");
         
         // 1. Render Texture
-        _uiRT = new RenderTexture(800, 500, 24);
+        _uiRT = new RenderTexture(1000, 200, 24);
         _uiRT.name = "WizRT";
 
         // 2. Panel Settings
@@ -107,14 +107,14 @@ public class WizardOfOzClient : MonoBehaviour
         GameObject uiObj = new GameObject("UIDoc");
         uiObj.transform.SetParent(_mainUIRoot.transform);
         _uiDoc = uiObj.AddComponent<UIDocument>();
-        _uiDoc.visualTreeAsset = Resources.Load<VisualTreeAsset>("UI/MainLayout");
+        _uiDoc.visualTreeAsset = Resources.Load<VisualTreeAsset>("UI/SubtitleLayout");
         _uiDoc.panelSettings = settings;
 
         // 4. Visual Quad
         GameObject quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
         quad.name = "PanelQuad";
         quad.transform.SetParent(_mainUIRoot.transform);
-        quad.transform.localScale = new Vector3(0.8f, 0.5f, 1f);
+        quad.transform.localScale = new Vector3(1.0f, 0.2f, 1f);
 
         Material mat = new Material(Shader.Find("Unlit/Transparent"));
         mat.mainTexture = _uiRT;
@@ -128,7 +128,9 @@ public class WizardOfOzClient : MonoBehaviour
         // Position it in front of camera
         if (_mainCam != null)
         {
-            _mainUIRoot.transform.position = _mainCam.transform.position + (_mainCam.transform.forward * 2.0f);
+            Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.5f);
+            target += Vector3.down * 0.4f;
+            _mainUIRoot.transform.position = target;
             _mainUIRoot.transform.LookAt(_mainCam.transform);
             _mainUIRoot.transform.Rotate(0, 180, 0);
         }
@@ -154,7 +156,8 @@ public class WizardOfOzClient : MonoBehaviour
     {
         if (_mainUIRoot != null && _mainCam != null)
         {
-            Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 2.0f);
+            Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.5f);
+            target += Vector3.down * 0.4f;
             _mainUIRoot.transform.position = Vector3.Lerp(_mainUIRoot.transform.position, target, Time.deltaTime * 4.0f);
             _mainUIRoot.transform.LookAt(_mainCam.transform);
             _mainUIRoot.transform.Rotate(0, 180, 0);
@@ -184,11 +187,9 @@ public class UIManager
 {
     private Label _label;
     public UIManager(UIDocument doc) {
-        _label = doc.rootVisualElement.Query<Label>(className: "sub-title");
+        _label = doc.rootVisualElement.Q<Label>("subtitle-text");
         if (_label != null) {
             _label.text = "READY: Speak Now";
-            _label.style.color = new StyleColor(Color.yellow);
-            _label.style.fontSize = 35;
         }
     }
     public void UpdateText(string t) { if (_label != null) _label.text = t; }
@@ -223,7 +224,14 @@ public class VoiceManager : IDisposable
         _r = new DictationRecognizer();
         _r.DictationResult += (t, c) => OnSentenceCompleted?.Invoke(t);
         _r.DictationHypothesis += (t) => OnListeningStarted?.Invoke();
-        _r.DictationError += (e, h) => OnError?.Invoke(e.ToString());
+        _r.DictationError += (e, h) => {
+            OnError?.Invoke(e.ToString());
+            Restart();
+        };
+        _r.DictationComplete += (cause) => {
+            Debug.Log($"[VoiceManager] Dictation completed because: {cause}. Restarting...");
+            Restart();
+        };
     }
     public void Start() { 
         if (_r.Status != SpeechSystemStatus.Running) {
@@ -234,6 +242,14 @@ public class VoiceManager : IDisposable
             _r.Start(); 
         }
     }
+
+    private void Restart() {
+        if (_r.Status == SpeechSystemStatus.Running) {
+            _r.Stop();
+        }
+        _r.Start();
+    }
+
     public void Dispose() { _r?.Stop(); _r?.Dispose(); }
 }
 
