@@ -8,7 +8,7 @@ public class App : MonoBehaviour
     private Camera _mainCam;
     
     // --- SETTINGS ---
-    private float _distance = 2.0f;      // How far away (Meters)
+    private float _distance = 1.5f;      // How far away (Meters)
     private float _smoothSpeed = 4.0f;    // How fast it catches up to you
     
     // UI DIMENSIONS (Must match your USS/CSS)
@@ -144,25 +144,7 @@ public class App : MonoBehaviour
 
         // 9. Brand logo and bottom-bar icons: add images to Assets/Resources/UI/
         var root = uiDoc.rootVisualElement;
-        var brandLogo = root.Q<VisualElement>("brand-logo");
-        if (brandLogo != null)
-        {
-            // Try Texture2D (e.g. PNG) first
-            var logoTexture = Resources.Load<Texture2D>("UI/HoloAssistLogo");
-            if (logoTexture != null)
-            {
-                brandLogo.style.backgroundImage = Background.FromTexture2D(logoTexture);
-            }
-            else
-            {
-                // Fallback to Sprite (e.g. imported SVG as Sprite)
-                var logoSprite = Resources.Load<Sprite>("UI/HoloAssistLogo");
-                if (logoSprite != null)
-                {
-                    brandLogo.style.backgroundImage = Background.FromSprite(logoSprite);
-                }
-            }
-        }
+        SetIcon(root, "brand-logo", "UI/HoloAssistLogo");
 
         SetBottomBarIcon(root, "icon-volume", "UI/volume");
         SetBottomBarIcon(root, "icon-microphone", "UI/microphone");
