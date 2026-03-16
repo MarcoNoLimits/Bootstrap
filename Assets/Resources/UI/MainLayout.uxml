@@ -1,66 +1,102 @@
 <ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements" editor-extension-mode="False">
     <Style src="project://database/Assets/Resources/UI/Styles.uss?fileID=7433441132597879392&amp;guid=3472e228a666645478a446e7f8887783&amp;type=3#Styles" />
     <ui:VisualElement name="glass-container" class="glass-panel">
-        <ui:VisualElement name="main-content" class="row">
-            <ui:VisualElement class="center-panel">
-                <ui:VisualElement class="center-content">
-                    <ui:VisualElement class="brand-row">
-                        <ui:VisualElement name="brand-logo" class="brand-logo" />
-                        <ui:Label text="HOLOASSIST" class="brand-name" />
-                    </ui:VisualElement>
-                    <ui:Label text="Conversation Companion" class="welcome-title" />
-                    <ui:Label text="Intelligent Real-Time Communication Assistance." class="sub-title" />
-                    <ui:VisualElement class="button-row">
-                        <ui:Button name="btn-start" text="Start" class="primary-btn" />
-                        <ui:Button name="btn-settings" text="Settings" class="secondary-btn" />
-                    </ui:VisualElement>
-                </ui:VisualElement>
-                <ui:VisualElement class="bottom-bar">
-                    <ui:Label text="☰" class="icon-placeholder icon-menu" />
-                    <ui:VisualElement class="bottom-bar-icons">
-                        <ui:VisualElement name="icon-volume" class="bottom-bar-icon" />
-                        <ui:VisualElement name="icon-microphone" class="bottom-bar-icon" />
-                        <ui:VisualElement name="icon-refresh" class="bottom-bar-icon" />
-                    </ui:VisualElement>
-                </ui:VisualElement>
+
+        <!-- HUD header row with hamburger, title and DHH status -->
+        <ui:VisualElement name="top-bar" class="top-bar">
+            <ui:Label text="☰" name="hamburger-toggle" class="hamburger-icon" />
+            <ui:VisualElement class="top-title">
+                <ui:VisualElement name="brand-logo" class="brand-logo" />
+                <ui:Label text="COMMUNICATION HUB" class="top-title-text" />
             </ui:VisualElement>
-            <ui:VisualElement class="right-panel">
-                <ui:VisualElement class="settings-header">
-                    <ui:VisualElement name="icon-search" class="settings-icon-img" />
-                    <ui:Label text="Settings" class="settings-label" />
-                </ui:VisualElement>
-                <ui:TextField name="search-bar" placeholder="Search Settings..." class="search-field" />
-                <ui:ScrollView class="nav-scroll">
-                    <ui:VisualElement class="nav-item-row">
-                        <ui:VisualElement name="nav-icon-asr" class="nav-icon-img" />
-                        <ui:Button text="ASR" class="nav-item" />
-                    </ui:VisualElement>
-                    <ui:VisualElement class="nav-item-row">
-                        <ui:VisualElement name="nav-icon-translation" class="nav-icon-img" />
-                        <ui:Button text="Translation" class="nav-item" />
-                    </ui:VisualElement>
-                    <ui:VisualElement class="nav-item-row">
-                        <ui:VisualElement name="nav-icon-sign-language" class="nav-icon-img" />
-                        <ui:Button text="Sign Language" class="nav-item" />
-                    </ui:VisualElement>
-                    <ui:VisualElement class="nav-item-row">
-                        <ui:VisualElement name="nav-icon-notifications" class="nav-icon-img" />
-                        <ui:Button text="Notifications" class="nav-item" />
-                    </ui:VisualElement>
-                    <ui:VisualElement class="nav-item-row">
-                        <ui:VisualElement name="nav-icon-privacy" class="nav-icon-img" />
-                        <ui:Button text="Privacy" class="nav-item" />
-                    </ui:VisualElement>
-                    <ui:VisualElement class="nav-item-row">
-                        <ui:VisualElement name="nav-icon-help" class="nav-icon-img" />
-                        <ui:Button text="Help" class="nav-item" />
-                    </ui:VisualElement>
-                    <ui:VisualElement class="nav-item-row">
-                        <ui:VisualElement name="nav-icon-about" class="nav-icon-img" />
-                        <ui:Button text="About" class="nav-item" />
-                    </ui:VisualElement>
-                </ui:ScrollView>
+            <ui:VisualElement name="status-bar" class="status-bar">
+                <ui:VisualElement name="icon-microphone" class="status-icon" />
+                <ui:Label text="DHH Mode Active" class="status-text" />
             </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- Main area: one active card plus footer mode button -->
+        <ui:VisualElement name="main-content" class="hub-cards">
+            <!-- ASR card -->
+            <ui:VisualElement name="card-asr" class="hub-card active" data-mode="asr">
+                <ui:VisualElement class="card-header">
+                    <ui:Label text="Automatic Speech Recognition" class="card-title" />
+                    <ui:Button name="btn-asr-start" text="Start ASR" class="asr-start-btn" />
+                </ui:VisualElement>
+                <ui:VisualElement class="card-body">
+                    <ui:VisualElement>
+                        <ui:Label text="Use Automatic Speech Recognition to capture live speech from the headset and render it as readable text, with optional translation to Italian." class="card-body-text" />
+                        <ui:VisualElement name="translation-toggle" class="translation-toggle">
+                            <ui:Label text="Text Translation" class="translation-toggle-label" />
+                            <ui:VisualElement name="translation-toggle-switch" class="translation-toggle-switch" />
+                        </ui:VisualElement>
+                    </ui:VisualElement>
+                </ui:VisualElement>
+                <ui:VisualElement name="icon-volume" class="asr-volume-icon" />
+            </ui:VisualElement>
+
+            <!-- Sign Language card -->
+            <ui:VisualElement name="card-sign" class="hub-card" data-mode="sign">
+                <ui:VisualElement class="card-header">
+                    <ui:Label text="Sign Language" class="card-title" />
+                    <ui:Button name="btn-sign-start" text="Start Sign Language" class="asr-start-btn" />
+                </ui:VisualElement>
+                <ui:Label text="Analyze and surface key sign language cues so spoken conversations are easier to follow visually." class="card-body-text" />
+                <ui:VisualElement name="icon-signlanguage-accent" class="signlanguage-accent-icon" />
+            </ui:VisualElement>
+
+            <!-- Text Translation card -->
+            <ui:VisualElement name="card-translation" class="hub-card" data-mode="translation">
+                <ui:VisualElement class="card-header">
+                    <ui:Label text="Language Translation" class="card-title" />
+                    <ui:Button name="btn-translation-start" text="Start Translation" class="asr-start-btn" />
+                </ui:VisualElement>
+                <ui:Label text="Translate recognized text into your target language so you can track the conversation in real time." class="card-body-text" />
+                <ui:VisualElement name="icon-translation-accent" class="translation-accent-icon" />
+            </ui:VisualElement>
+
+            <!-- Footer mode-switch button -->
+            <ui:VisualElement class="mode-footer">
+                <ui:Button name="btn-mode-switch" text="Sign Language" class="mode-button" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- Hidden icon bank so existing nav icons still exist for code, but not visible in HUD -->
+        <ui:VisualElement name="icon-bank" class="icon-bank">
+            <ui:VisualElement class="settings-header">
+                <ui:VisualElement name="icon-search" class="settings-icon-img" />
+                <ui:Label text="Quick Access" class="settings-label" />
+            </ui:VisualElement>
+            <ui:ScrollView class="nav-scroll">
+                <ui:VisualElement class="nav-item-row">
+                    <ui:VisualElement name="nav-icon-asr" class="nav-icon-img" />
+                    <ui:Button text="ASR" class="nav-item" />
+                </ui:VisualElement>
+                <ui:VisualElement class="nav-item-row">
+                    <ui:VisualElement name="nav-icon-translation" class="nav-icon-img" />
+                    <ui:Button text="Translation" class="nav-item" />
+                </ui:VisualElement>
+                <ui:VisualElement class="nav-item-row">
+                    <ui:VisualElement name="nav-icon-sign-language" class="nav-icon-img" />
+                    <ui:Button text="Sign Language" class="nav-item" />
+                </ui:VisualElement>
+                <ui:VisualElement class="nav-item-row">
+                    <ui:VisualElement name="nav-icon-notifications" class="nav-icon-img" />
+                    <ui:Button text="Notifications" class="nav-item" />
+                </ui:VisualElement>
+                <ui:VisualElement class="nav-item-row">
+                    <ui:VisualElement name="nav-icon-privacy" class="nav-icon-img" />
+                    <ui:Button text="Privacy" class="nav-item" />
+                </ui:VisualElement>
+                <ui:VisualElement class="nav-item-row">
+                    <ui:VisualElement name="nav-icon-help" class="nav-icon-img" />
+                    <ui:Button text="Help" class="nav-item" />
+                </ui:VisualElement>
+                <ui:VisualElement class="nav-item-row">
+                    <ui:VisualElement name="nav-icon-about" class="nav-icon-img" />
+                    <ui:Button text="About" class="nav-item" />
+                </ui:VisualElement>
+            </ui:ScrollView>
         </ui:VisualElement>
     </ui:VisualElement>
 </ui:UXML>

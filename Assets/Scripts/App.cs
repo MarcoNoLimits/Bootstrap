@@ -17,6 +17,25 @@ public class App : MonoBehaviour
     private float _uiHeight = 500f;
     private float _scale = 0.001f;        // The scale we apply to the object
 
+    // Horizontal offset in front of the user so the person
+    // they are looking at can remain roughly centered.
+    // Negative = to the left of the camera view.
+    [SerializeField] private float _horizontalOffset = -0.4f;
+
+    // Simple state flags other systems can read if needed
+    public bool IsAsrActive { get; private set; }
+    public bool IsTranslationActive { get; private set; }
+
+    private VisualElement _cardAsr;
+    private VisualElement _cardSign;
+    private VisualElement _cardTranslation;
+    private Button _btnAsrStart;
+    private Button _btnSignStart;
+    private Button _btnTranslationStart;
+    private Button _btnModeSwitch;
+    private VisualElement _translationToggleSwitch;
+    private Label _asrDescription;
+
     private void Awake()
     {
         InitializeUI();
@@ -49,8 +68,12 @@ public class App : MonoBehaviour
     {
         if (_mainUI == null) return;
 
-        // 1. Target Position: In front of camera
-        Vector3 targetPos = _mainCam.transform.position + (_mainCam.transform.forward * _distance);
+        // 1. Target Position: In front of camera, slightly offset horizontally
+        Vector3 forward = _mainCam.transform.forward;
+        Vector3 right = _mainCam.transform.right;
+        Vector3 targetPos = _mainCam.transform.position
+                            + (forward * _distance)
+                            + (right * _horizontalOffset);
 
         // 2. Move
         if (instant)
@@ -146,6 +169,7 @@ public class App : MonoBehaviour
         var root = uiDoc.rootVisualElement;
         SetIcon(root, "brand-logo", "UI/HoloAssistLogo");
 
+        // Icons still loaded so existing styles work
         SetBottomBarIcon(root, "icon-volume", "UI/volume");
         SetBottomBarIcon(root, "icon-microphone", "UI/microphone");
         SetBottomBarIcon(root, "icon-refresh", "UI/refresh");
@@ -159,20 +183,176 @@ public class App : MonoBehaviour
         SetIcon(root, "nav-icon-help", "UI/help");
         SetIcon(root, "nav-icon-about", "UI/about");
 
-        // 10. Test Button Action
-        // Find the "Settings" button and add a debug action
-        var btnSettings = root.Q<Button>("btn-settings");
-        if (btnSettings != null)
-        {
-            btnSettings.clicked += () => 
-            {
-                Debug.Log("Settings Button Clicked via Hand Interaction!");
-                // Text will be overridden by logger
-            };
+        // Grab cards and buttons for mode switching / ASR control
+        _cardAsr = root.Q<VisualElement>("card-asr");
+        _cardSign = root.Q<VisualElement>("card-sign");
+        _cardTranslation = root.Q<VisualElement>("card-translation");
 
-            // 11. Debug Hand Tracking
-            var logger = _mainUI.AddComponent<XRDebugLogger>();
-            logger.debugButton = btnSettings;
+        _btnAsrStart = root.Q<Button>("btn-asr-start");
+        _btnSignStart = root.Q<Button>("btn-sign-start");
+        _btnTranslationStart = root.Q<Button>("btn-translation-start");
+        _btnModeSwitch = root.Q<Button>("btn-mode-switch");
+
+        _translationToggleSwitch = root.Q<VisualElement>("translation-toggle-switch");
+        _asrDescription = root.Q<Label>("asr-description");
+
+        // Optional accent icon for sign language card (bottom-right)
+        SetIcon(root, "icon-signlanguage-accent", "UI/blue-signlanguage");
+        // Optional accent icon for language translation card (bottom-right)
+        SetIcon(root, "icon-translation-accent", "UI/blue-translate");
+
+        WireUiLogic();
+
+        // Subscribe to ASR text updates if the manager exists in the scene.
+        if (HololensAsrManager.Instance != null)
+        {
+            HololensAsrManager.Instance.OnTextUpdated += OnAsrTextUpdated;
+        }
+    }
+
+    private enum Mode
+    {
+        Asr,
+        Sign,
+        Translation
+    }
+
+    private Mode _currentMode = Mode.Asr;
+
+    private void WireUiLogic()
+    {
+        // Mode button – cycle between cards
+        if (_btnModeSwitch != null)
+        {
+            _btnModeSwitch.clicked += () =>
+            {
+                switch (_currentMode)
+                {
+                    case Mode.Asr:
+                        SetMode(Mode.Sign);
+                        break;
+                    case Mode.Sign:
+                        SetMode(Mode.Translation);
+                        break;
+                    default:
+                        SetMode(Mode.Asr);
+                        break;
+                }
+            };
+        }
+
+        // ASR start / stop
+        if (_btnAsrStart != null)
+        {
+            _btnAsrStart.clicked += () =>
+            {
+                IsAsrActive = !IsAsrActive;
+                _btnAsrStart.text = IsAsrActive ? "Stop ASR" : "Start ASR";
+                Debug.Log(IsAsrActive ? "[ASR] Started" : "[ASR] Stopped");
+
+                if (HololensAsrManager.Instance != null)
+                {
+                    if (IsAsrActive)
+                    {
+                        HololensAsrManager.Instance.StartAsr();
+                    }
+                    else
+                    {
+                        HololensAsrManager.Instance.StopAsr();
+                    }
+                }
+            };
+        }
+
+        // Sign language start / stop
+        if (_btnSignStart != null)
+        {
+            _btnSignStart.clicked += () =>
+            {
+                bool active = _btnSignStart.text.StartsWith("Start");
+                _btnSignStart.text = active ? "Stop Sign Language" : "Start Sign Language";
+                Debug.Log(active ? "[Sign] Started" : "[Sign] Stopped");
+            };
+        }
+
+        // Translation card start / stop
+        if (_btnTranslationStart != null)
+        {
+            _btnTranslationStart.clicked += () =>
+            {
+                bool active = _btnTranslationStart.text.StartsWith("Start");
+                _btnTranslationStart.text = active ? "Stop Translation" : "Start Translation";
+                Debug.Log(active ? "[Translation] Started" : "[Translation] Stopped");
+            };
+        }
+
+        // Translation toggle inside ASR card (visual on/off)
+        if (_translationToggleSwitch != null && _asrDescription != null)
+        {
+            string en = "Use Automatic Speech Recognition to capture live speech from the headset and render it as readable text, with optional translation to Italian.";
+            string it = "Usa il riconoscimento vocale automatico per catturare il parlato dal visore e mostrarlo come testo leggibile, con traduzione opzionale in italiano.";
+
+            _translationToggleSwitch.RegisterCallback<ClickEvent>(_ =>
+            {
+                IsTranslationActive = !IsTranslationActive;
+                _translationToggleSwitch.ToggleInClassList("on");
+                // When toggling, keep whatever live text we currently have, just
+                // switch between English and Italian variants where possible.
+                Debug.Log(IsTranslationActive ? "[ASR] Italian translation ON" : "[ASR] Italian translation OFF");
+            });
+
+            // Ensure initial state is off
+            IsTranslationActive = false;
+            _translationToggleSwitch.RemoveFromClassList("on");
+            _asrDescription.text = en;
+        }
+
+        // Initial mode
+        SetMode(_currentMode);
+    }
+
+    private void SetMode(Mode mode)
+    {
+        _currentMode = mode;
+
+        if (_cardAsr != null)
+            _cardAsr.style.display = mode == Mode.Asr ? DisplayStyle.Flex : DisplayStyle.None;
+        if (_cardSign != null)
+            _cardSign.style.display = mode == Mode.Sign ? DisplayStyle.Flex : DisplayStyle.None;
+        if (_cardTranslation != null)
+            _cardTranslation.style.display = mode == Mode.Translation ? DisplayStyle.Flex : DisplayStyle.None;
+
+        if (_btnModeSwitch != null)
+        {
+            switch (mode)
+            {
+                case Mode.Asr:
+                    _btnModeSwitch.text = "Sign Language";
+                    break;
+                case Mode.Sign:
+                    _btnModeSwitch.text = "Language Translation";
+                    break;
+                case Mode.Translation:
+                    _btnModeSwitch.text = "Back to ASR";
+                    break;
+            }
+        }
+    }
+
+    private void OnAsrTextUpdated(string text)
+    {
+        if (_asrDescription == null) return;
+
+        // In a real app you would pass 'text' to a translation service when
+        // IsTranslationActive is true and then display the translated result.
+        // For now we simply prefix to show the flow is working.
+        if (IsTranslationActive)
+        {
+            _asrDescription.text = "[IT] " + text;
+        }
+        else
+        {
+            _asrDescription.text = text;
         }
     }
 

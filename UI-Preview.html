@@ -14,259 +14,370 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      background: url('https://images.unsplash.com/photo-1586023492125-27b2c045efd7?w=1200') center/cover;
+      background: url('https://images.unsplash.com/photo-1526498460520-4c246339dccb?w=1600') center/cover no-repeat;
       font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-    body::after {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.15);
-      backdrop-filter: blur(10px);
-      z-index: 0;
+      color: #f5f5f8;
     }
     .glass-panel {
       position: relative;
-      z-index: 1;
-      width: 920px;
-      height: 500px;
-      background: rgba(14, 42, 78, 0.58);
-      border-radius: 24px;
-      border-top-right-radius: 24px;
-      border-bottom-right-radius: 24px;
-      border: 1px solid rgba(255, 255, 255, 0.25);
-      padding: 0;
-      display: flex;
-      flex-direction: column;
-      box-shadow: 0 16px 48px rgba(0,0,0,0.2);
-      overflow: hidden;
-    }
-    .row {
-      flex: 1;
-      display: flex;
-      flex-direction: row;
-      min-height: 0;
-    }
-    .center-panel {
-      flex: 2;
-      padding: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: stretch;
-      justify-content: space-between;
-    }
-    .center-content {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      justify-content: flex-start;
-      padding-top: 24px;
-      padding-left: 24px;
-    }
-    .brand-row {
-      display: flex;
-      flex-direction: row;
-      align-items: center;
-      align-self: center;
-      margin-bottom: 40px;
-    }
-    .brand-logo {
-      width: 48px;
-      height: 48px;
-      margin-right: 14px;
-      object-fit: contain;
-    }
-    .brand-name {
-      font-size: 20px;
-      font-weight: 700;
-      font-style: italic;
-      color: rgba(255,255,255,0.98);
-      text-align: left;
-      letter-spacing: 2px;
-    }
-    .welcome-title {
-      font-size: 28px;
-      font-weight: 700;
-      color: rgba(255,255,255,0.98);
-      margin-bottom: 28px;
-      text-align: left;
-    }
-    .sub-title {
-      font-size: 22px;
-      color: rgba(235, 242, 255, 0.9);
-      margin-bottom: 72px;
-      text-align: left;
-    }
-    .button-row {
-      display: flex;
-      gap: 48px;
-      align-self: center;
-    }
-    .primary-btn, .secondary-btn {
-      width: 200px;
-      height: 62px;
-      border-radius: 14px;
-      font-size: 25px;
-      font-weight: 600;
-      color: #fff;
-      cursor: pointer;
-      border: none;
-      font-family: inherit;
-    }
-    .primary-btn {
-      background: rgba(50, 120, 200, 0.8);
-    }
-    .primary-btn:hover { background: rgba(70, 140, 220, 0.9); }
-    .secondary-btn {
+      width: 550px;
+      height: 640px;
       background: transparent;
-      border: 2px solid rgba(255,255,255,0.35);
-    }
-    .secondary-btn:hover { background: rgba(255,255,255,0.08); }
-    .right-panel {
-      width: 240px;
-      margin-left: 0;
-      background: rgba(14, 42, 78, 0.38);
-      border-left: 1px solid rgba(255,255,255,0.38);
-      border-top-right-radius: 24px;
-      border-bottom-right-radius: 24px;
-      box-shadow: 2px 0 8px rgba(0,0,0,0.15);
-      padding: 16px;
+      border-radius: 20px;
       display: flex;
       flex-direction: column;
       overflow: hidden;
     }
-    .settings-header {
+    .status-bar {
       display: flex;
       align-items: center;
-      margin-bottom: 10px;
+      gap: 8px;
     }
-    .settings-icon { font-size: 20px; margin-right: 8px; color: rgba(180, 220, 255, 0.95); }
-    .settings-icon-img {
-      width: 22px; height: 22px; margin-right: 10px;
-      object-fit: contain; filter: brightness(0) invert(1); opacity: 0.9;
-    }
-    .settings-label { font-size: 20px; font-weight: 700; color: rgba(255,255,255,0.98); }
-    .search-field {
-      width: 100%;
-      padding: 10px 14px;
-      border-radius: 10px;
-      border: 1px solid rgba(255,255,255,0.18);
-      background: rgba(255,255,255,0.06);
-      color: #fff;
-      margin-bottom: 24px;
-      font-family: inherit;
-      font-size: 15px;
-    }
-    .search-field::placeholder { color: rgba(255,255,255,0.5); }
-    .nav-scroll {
-      flex: 1;
-      overflow-y: auto;
-    }
-    .nav-item-row {
-      display: flex;
-      align-items: center;
-      margin-top: 4px;
-      padding: 6px 8px;
-      border-radius: 8px;
-    }
-    .nav-item-row:hover { background: rgba(255,255,255,0.06); }
-    .nav-icon {
-      font-size: 20px;
-      color: rgba(180, 220, 255, 0.9);
-      width: 28px;
-      margin-right: 10px;
-    }
-    .nav-icon-img {
-      width: 22px; height: 22px; margin-right: 12px;
-      object-fit: contain; filter: brightness(0) invert(1); opacity: 0.9;
-    }
-    .nav-item {
-      flex: 1;
-      background: none;
-      border: none;
-      color: rgba(255,255,255,0.95);
-      font-size: 17px;
-      font-weight: 400;
-      text-align: left;
-      cursor: pointer;
-      font-family: inherit;
-    }
-    .bottom-bar {
-      width: 100%;
-      height: 54px;
-      background: rgba(14, 42, 78, 0.38);
-      border-top: 1px solid rgba(255,255,255,0.28);
-      box-shadow: 0 -2px 8px rgba(0,0,0,0.12);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding-left: 20px;
-      padding-right: 20px;
-    }
-    .bottom-bar-icons {
-      display: flex;
-      align-items: center;
-      gap: 28px;
-    }
-    .bottom-bar-icon {
-      width: 28px;
-      height: 28px;
+    .status-icon {
+      width: 25px;
+      height: 25px;
       object-fit: contain;
       filter: brightness(0) invert(1);
       opacity: 0.9;
     }
-    .icon-placeholder {
-      font-size: 22px;
+    .status-text {
+      color: #ffffff;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .top-bar {
+      height: 78px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 18px;
+      border-radius: 20px;
+      border: 2px solid rgba(110,185,235,0.55);
+      background: radial-gradient(circle at top, rgba(70,150,215,0.25), rgba(8,32,70,0.6));
+      box-shadow: 0 0 20px rgba(15,110,190,0.45);
+    }
+    .hamburger-icon {
+      font-size: 26px;
       color: rgba(255,255,255,0.9);
     }
-    .bottom-bar .icon-placeholder:first-child {
-      font-size: 28px;
+    .top-title {
+      display: flex;
+      align-items: center;
     }
+    .top-title-text {
+      font-size: 18px;
+      font-weight: 700;
+      color: #b8e0e6e4;
+    }
+    .hub-cards {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      padding: 20px 18px 18px 18px;
+      gap: 12px;
+      margin-top: 6px;
+      border-radius: 20px;
+      border: 2px solid rgba(110, 185, 235, 0.486);
+      box-shadow: 0 0 24px rgba(15,110,190,0.45);
+      background: radial-gradient(circle at top, rgba(36,110,190,0.22), rgba(6,26,54,0.6));
+    }
+    .hub-card {
+      display: none;
+      position: relative;
+      min-height: 100%;
+      background: rgba(60,140,190,0.18);
+      border-radius: 22px;
+      border: 2px solid rgba(110, 185, 235, 0.333);
+      box-shadow: 0 0 18px rgba(15,110,190,0.4);
+      padding: 12px 12px 10px 12px;
+    }
+    .hub-card.active {
+      display: block;
+    }
+   
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 15px;
+    }
+    .card-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #b8e0e6e4;
+    }
+    .card-live-pill {
+      min-width: 44px;
+      height: 18px;
+      border-radius: 999px;
+      background: rgba(26,190,90,0.95);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .card-live-pill.secondary {
+      background: rgba(230,178,46,0.95);
+    }
+    .card-live-text {
+      font-size: 10px;
+      color: #fff;
+    }
+    .card-body {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .card-body-text {
+      font-size: 15px;
+      color: rgba(220,235,255,0.96);
+      font-weight: 500;
+      line-height: 1.5;
+    }
+    .translation-toggle {
+      position: absolute;
+      left: 16px;
+      bottom: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(8,32,70,0.35);
+      font-size: 11px;
+      color: rgba(220,235,255,0.75);
+    }
+    .translation-toggle-label {
+      font-weight: 500;
+    }
+    .translation-toggle-switch {
+      width: 24px;
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(40,140,220,0.28);
+      border: 1px solid rgba(140,210,255,0.5);
+      position: relative;
+      box-sizing: border-box;
+    }
+    .translation-toggle-switch::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 3px;
+      width: 8px;
+      height: 8px;
+      transform: translateY(-50%);
+      border-radius: 50%;
+      background: rgba(230,245,255,0.98);
+      box-shadow: 0 0 6px rgba(200,240,255,0.8);
+    }
+    .translation-toggle-switch.on {
+      background: rgba(80,180,255,0.7);
+      border-color: rgba(160,230,255,0.9);
+    }
+    .translation-toggle-switch.on::before {
+      left: calc(100% - 11px);
+    }
+    .sound-indicator {
+      width: 70px;
+      height: 18px;
+      border-radius: 10px;
+      background: rgba(6,18,34,0.9);
+      border: 1px solid rgba(120,185,235,0.75);
+    }
+    .asr-start-btn {
+      padding: 10px 15px;
+      border-radius: 12px;
+      border: 1px solid rgba(56, 199, 255, 0.504);
+      background: rgba(10, 59, 90, 0.591);
+      color: #dce0e2;
+      font-size: 13px;
+      font-weight: 600;
+      /* box-shadow: 0 0 20px rgba(80, 220, 255, 0.492); */
+      cursor: pointer;
+      font-style: inherit;
+    }
+    .asr-start-btn:hover {
+      box-shadow: 0 0 26px rgba(120,240,255,0.95);
+    }
+    .asr-volume-icon {
+      position: absolute;
+      right: 0px;
+      bottom: 14px;
+      width: 80px;
+      height: 26px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 2px;
+    }
+    .asr-volume-icon span {
+      width: 5px;
+      background: linear-gradient(to top, rgba(140,230,255,0.95), rgba(210,250,255,0.95));
+      /* background: rgba(149, 151, 151, 0.452); */
+      border-radius: 2px;
+    }
+    .asr-volume-icon span:nth-child(1) { height: 5px;  opacity: 0.45; }
+    .asr-volume-icon span:nth-child(2) { height: 7px;  opacity: 0.55; }
+    .asr-volume-icon span:nth-child(3) { height: 11px; opacity: 0.6; }
+    .asr-volume-icon span:nth-child(4) { height: 15px; opacity: 0.7; }
+    .asr-volume-icon span:nth-child(5) { height: 19px; opacity: 0.8; }
+    .asr-volume-icon span:nth-child(6) { height: 24px; opacity: 0.85;   background: rgba(149, 151, 151, 0.452);}
+    .asr-volume-icon span:nth-child(7) { height: 28px; opacity: 0.9;   background: rgba(149, 151, 151, 0.452);}
+    .asr-volume-icon span:nth-child(8) { height: 33px; opacity: 0.95;  background: rgba(149, 151, 151, 0.452); }
+
+    .mode-footer {
+      margin-top: 8px;
+      display: flex;
+      justify-content: center;
+    }
+    .mode-button {
+      padding: 10px 26px;
+      border-radius: 14px;
+      border: 1px solid rgba(56, 199, 255, 0.7);
+      background: rgba(10, 59, 90, 0.8);
+      color: #dce0e2;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .mode-button.active {
+      background: rgba(80,180,255,0.95);
+      color: #021017;
+      border-color: rgba(160,230,255,0.95);
+      box-shadow: 0 0 20px rgba(80, 220, 255, 0.5);
+    }
+    .signlanguage-accent-icon {
+      position: absolute;
+      right: 16px;
+      bottom: 10px;
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+    }
+    .translation-accent-icon {
+      position: absolute;
+      right: 16px;
+      bottom: 10px;
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+    }
+
   </style>
 </head>
 <body>
   <div class="glass-panel">
-    <div class="row">
-      <div class="center-panel">
-        <div class="center-content">
-          <div class="brand-row">
-            <img src="images/HoloAssistLogo.png" alt="HOLOASSIST" class="brand-logo">
-            <p class="brand-name">HOLOASSIST</p>
-          </div>
-          <p class="welcome-title">Conversation Companion</p>
-          <p class="sub-title">Intelligent Real-Time Communication Assistance.</p>
-          <div class="button-row">
-            <button type="button" class="primary-btn">Start</button>
-            <button type="button" class="secondary-btn">Settings</button>
-          </div>
-        </div>
-        <div class="bottom-bar">
-          <span class="icon-placeholder">☰</span>
-          <div class="bottom-bar-icons">
-            <img src="images/volume.svg" alt="Volume" class="bottom-bar-icon">
-            <img src="images/microphone.svg" alt="Microphone" class="bottom-bar-icon">
-            <img src="images/refresh.svg" alt="Refresh" class="bottom-bar-icon">
-          </div>
-        </div>
+    <div class="top-bar">
+      <span class="hamburger-icon">☰</span>
+      <div class="top-title">
+        <span class="top-title-text">COMMUNICATION HUB</span>
       </div>
-      <div class="right-panel">
-        <div class="settings-header">
-          <img src="images/search.svg" alt="Search" class="settings-icon-img">
-          <span class="settings-label">Settings</span>
-        </div>
-        <input type="text" class="search-field" placeholder="Search Settings...">
-        <div class="nav-scroll">
-          <div class="nav-item-row"><img src="images/ASR.svg" alt="" class="nav-icon-img"><button type="button" class="nav-item">ASR</button></div>
-          <div class="nav-item-row"><img src="images/language.svg" alt="" class="nav-icon-img"><button type="button" class="nav-item">Translation</button></div>
-          <div class="nav-item-row"><img src="images/sign-language.svg" alt="" class="nav-icon-img"><button type="button" class="nav-item">Sign Language</button></div>
-          <div class="nav-item-row"><img src="images/notification.svg" alt="" class="nav-icon-img"><button type="button" class="nav-item">Notifications</button></div>
-          <div class="nav-item-row"><img src="images/privacy.svg" alt="" class="nav-icon-img"><button type="button" class="nav-item">Privacy</button></div>
-          <div class="nav-item-row"><img src="images/help.svg" alt="" class="nav-icon-img"><button type="button" class="nav-item">Help</button></div>
-          <div class="nav-item-row"><img src="images/about.svg" alt="" class="nav-icon-img"><button type="button" class="nav-item">About</button></div>
-        </div>
+      <div class="status-bar">
+        <img src="images/ear-listen.svg" alt="Listen" class="status-icon">
+        <span class="status-text">DHH Mode Active</span>
       </div>
     </div>
+
+    <div class="hub-cards">
+      <div class="hub-card active" data-mode="asr">
+        <div class="card-header">
+          <p class="card-title">Automatic Speech Recognition</p>
+          <button type="button" class="asr-start-btn">Start ASR</button>
+        </div>
+        <div class="card-body">
+          <div>
+            <p class="card-body-text" id="asr-description">Use Automatic Speech Recognition to capture live speech from the headset and render it as readable text, with optional translation to Italian.</p>
+            <div class="translation-toggle">
+              <span class="translation-toggle-label">Text Translation</span>
+              <span class="translation-toggle-switch" id="translation-toggle-switch"></span>
+            </div>
+          </div>
+        </div>
+        <div class="asr-volume-icon">
+          <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+      </div>
+
+      <div class="hub-card" data-mode="sign">
+        <div class="card-header">
+          <p class="card-title">Sign Language</p>
+          <button type="button" class="asr-start-btn">Start Sign Language</button>
+        </div>
+        <p class="card-body-text">Analyze and surface key sign language cues so spoken conversations are easier to follow visually.</p>
+        <img src="images/blue-signlanguage.svg" alt="Sign Language" class="signlanguage-accent-icon">
+      </div>
+
+      <div class="hub-card" data-mode="translation">
+        <div class="card-header">
+          <p class="card-title">Language Translation</p>
+          <button type="button" class="asr-start-btn">Start Translation</button>
+        </div>
+        <p class="card-body-text">Translate recognized text into your target language so you can track the conversation in real time.</p>
+        <img src="images/blue-translate.svg" alt="Language Translation" class="translation-accent-icon">
+      </div>
+    </div>
+    <div class="mode-footer">
+      <button type="button" class="mode-button" id="mode-button" data-next="sign">Sign Language</button>
+    </div>
   </div>
+<script>
+  (function() {
+    var modes = ['asr', 'sign', 'translation'];
+    var labels = {
+      asr: 'Sign Language',
+      sign: 'Language Translation',
+      translation: 'Back to ASR'
+    };
+    var current = 'asr';
+    var button = document.getElementById('mode-button');
+    var cards = Array.prototype.slice.call(document.querySelectorAll('.hub-card'));
+
+    function setMode(mode) {
+      current = mode;
+      cards.forEach(function(card) {
+        var m = card.getAttribute('data-mode') || 'asr';
+        card.classList.toggle('active', m === mode);
+      });
+      button.textContent = labels[mode];
+      var nextIndex = (modes.indexOf(mode) + 1) % modes.length;
+      button.setAttribute('data-next', modes[nextIndex]);
+    }
+
+    if (button) {
+      button.addEventListener('click', function() {
+        var next = button.getAttribute('data-next') || 'sign';
+        setMode(next);
+      });
+    }
+
+    setMode(current);
+  })();
+
+  // Text translation toggle: swap English/Italian description
+  (function() {
+    var toggle = document.getElementById('translation-toggle-switch');
+    var desc = document.getElementById('asr-description');
+    if (!toggle || !desc) return;
+    var en = 'Use Automatic Speech Recognition to capture live speech from the headset and render it as readable text, with optional translation to Italian.';
+    var it = 'Usa il riconoscimento vocale automatico per catturare il parlato dal visore e mostrarlo come testo leggibile, con traduzione opzionale in italiano.';
+    var on = false;
+    function update() {
+      if (on) {
+        toggle.classList.add('on');
+        desc.textContent = it;
+      } else {
+        toggle.classList.remove('on');
+        desc.textContent = en;
+      }
+    }
+    toggle.addEventListener('click', function() {
+      on = !on;
+      update();
+    });
+    update();
+  })();
+</script>
 </body>
 </html>
