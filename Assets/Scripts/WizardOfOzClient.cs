@@ -17,7 +17,7 @@ public class WizardOfOzClient : MonoBehaviour
 {
     [Header("Settings")]
     public string serverIP = "localhost";
-    public int serverPort = 8080;
+    public int serverPort = 8081;
 
     // UI Master Components (from legacy App.cs)
     private GameObject _mainUIRoot;
@@ -125,6 +125,20 @@ public class WizardOfOzClient : MonoBehaviour
         BoxCollider box = quad.AddComponent<BoxCollider>();
         box.size = new Vector3(1, 1, 0.05f);
 
+        // WorldUIInputBridge — translates XR ray hits into UI Toolkit pointer events
+        var bridge = _mainUIRoot.AddComponent<WorldUIInputBridge>();
+        bridge.uiDoc = _uiDoc;
+        bridge.renderTexture = _uiRT;
+        bridge.targetCollider = box;
+
+        // XRSimpleInteractable — makes the quad visible to XR ray interactors
+        var interactable = _mainUIRoot.AddComponent<XRSimpleInteractable>();
+        interactable.colliders.Clear();
+        interactable.colliders.Add(box);
+        interactable.selectEntered.AddListener(bridge.OnSelectEntered);
+        interactable.hoverEntered.AddListener(bridge.OnHoverEntered);
+        interactable.hoverExited.AddListener(bridge.OnHoverExited);
+
         // Position it in front of camera
         if (_mainCam != null)
         {
@@ -186,6 +200,12 @@ public class WizardOfOzClient : MonoBehaviour
 public class UIManager
 {
     private Label _label;
+    private Button _startBtn;
+    private bool _isRunning = false;
+
+    public System.Action OnStartPressed;
+    public System.Action OnStopPressed;
+
     public UIManager(UIDocument doc) {
         _label = doc.rootVisualElement.Q<Label>("subtitle-text");
         if (_label != null) {
