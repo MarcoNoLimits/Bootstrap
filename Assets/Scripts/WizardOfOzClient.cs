@@ -17,7 +17,7 @@ public class WizardOfOzClient : MonoBehaviour
 {
     [Header("Settings")]
     public string serverIP = "localhost";
-    public int serverPort = 8081;
+    public int serverPort = 18080;
 
     // UI Master Components (from legacy App.cs)
     private GameObject _mainUIRoot;
@@ -29,6 +29,19 @@ public class WizardOfOzClient : MonoBehaviour
     private NetworkManager _network;
     private VoiceManager _voice;
     private UIManager _uiManager;
+
+    [Header("Voice UI")]
+    [Tooltip("How long to wait (after last listening/hypothesis activity) before showing a stall hint. HoloLens often needs 45s+ before a final result.")]
+    [SerializeField] private float listeningStallSeconds = 55f;
+
+    [Tooltip("Minimum time between stall messages so they do not spam every stall interval.")]
+    [SerializeField] private float stallMessageCooldownSeconds = 120f;
+
+    [Tooltip("If false, never show the stall hint (subtitle can stay on Listening indefinitely).")]
+    [SerializeField] private bool showListeningStallHint = true;
+
+    private float _listeningStallDeadline = -1f;
+    private float _nextStallMessageAllowedTime;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void AutoStart()
@@ -150,20 +163,46 @@ public class WizardOfOzClient : MonoBehaviour
         }
     }
 
+    private static string StallHintText()
+    {
+#if UNITY_WSA && !UNITY_EDITOR
+        return "Still waiting for speech. Check HoloLens microphone permissions and speak clearly. Listening continues.";
+#else
+        return "Still waiting for speech. Check the microphone and speech privacy settings. Listening continues.";
+#endif
+    }
+
     private void WireEvents()
     {
         if (_voice == null || _uiManager == null) return;
 
-        _voice.OnListeningStarted += () => MainThreadDispatcher.RunOnMainThread(() => _uiManager.UpdateText("Listening..."));
-        
+        _voice.OnListeningStarted += () => MainThreadDispatcher.RunOnMainThread(() => {
+            _listeningStallDeadline = Time.time + listeningStallSeconds;
+            _uiManager.UpdateText("Listening...");
+        });
+
+        _voice.OnHypothesis += (partial) => MainThreadDispatcher.RunOnMainThread(() => {
+            _listeningStallDeadline = Time.time + listeningStallSeconds;
+            if (!string.IsNullOrEmpty(partial)) {
+                _uiManager.UpdateText($"Listening… {partial}");
+            }
+        });
+
         _voice.OnSentenceCompleted += (text) => {
-            MainThreadDispatcher.RunOnMainThread(() => _uiManager.UpdateText($"Recognized: {text}"));
+            MainThreadDispatcher.RunOnMainThread(() => {
+                _listeningStallDeadline = -1f;
+                _nextStallMessageAllowedTime = 0f;
+                _uiManager.UpdateText($"Recognized: {text}");
+            });
             _network.SendTranslationRequest(text, (resp) => {
                 MainThreadDispatcher.RunOnMainThread(() => _uiManager.UpdateText(resp));
             });
         };
 
-        _voice.OnError += (err) => MainThreadDispatcher.RunOnMainThread(() => _uiManager.UpdateText($"Error: {err}"));
+        _voice.OnError += (err) => MainThreadDispatcher.RunOnMainThread(() => {
+            _listeningStallDeadline = -1f;
+            _uiManager.UpdateText($"Error: {err}");
+        });
     }
 
     private void Update()
@@ -175,6 +214,23 @@ public class WizardOfOzClient : MonoBehaviour
             _mainUIRoot.transform.position = Vector3.Lerp(_mainUIRoot.transform.position, target, Time.deltaTime * 4.0f);
             _mainUIRoot.transform.LookAt(_mainCam.transform);
             _mainUIRoot.transform.Rotate(0, 180, 0);
+        }
+
+        if (showListeningStallHint
+            && _listeningStallDeadline > 0f
+            && Time.time >= _listeningStallDeadline
+            && _uiManager != null)
+        {
+            if (Time.time < _nextStallMessageAllowedTime)
+            {
+                _listeningStallDeadline = Time.time + listeningStallSeconds;
+            }
+            else
+            {
+                _nextStallMessageAllowedTime = Time.time + stallMessageCooldownSeconds;
+                _listeningStallDeadline = -1f;
+                _uiManager.UpdateText(StallHintText());
+            }
         }
 
         if (Input.GetKeyDown(KeyCode.Space))
@@ -235,49 +291,208 @@ public class NetworkManager
 
 public class VoiceManager : IDisposable
 {
+    private const float RestartSettleSeconds = 0.22f;
+
     private DictationRecognizer _r;
+    private bool _disposed;
+
+    private bool _restartPipelineRunning;
+    private bool _restartPending;
+    private DictationCompletionCause _pendingRestartCause = DictationCompletionCause.Complete;
+
     public Action OnListeningStarted;
+    /// <summary>Partial recognition text — use for live subtitle, not the same as session start.</summary>
+    public Action<string> OnHypothesis;
     public Action<string> OnSentenceCompleted;
     public Action<string> OnError;
 
     public VoiceManager() {
-        _r = new DictationRecognizer();
-        _r.DictationResult += (t, c) => OnSentenceCompleted?.Invoke(t);
-        _r.DictationHypothesis += (t) => OnListeningStarted?.Invoke();
-        _r.DictationError += (e, h) => {
-            OnError?.Invoke(e.ToString());
-            Restart();
-        };
-        _r.DictationComplete += (cause) => {
-            Debug.Log($"[VoiceManager] Dictation completed because: {cause}. Restarting...");
-            Restart();
-        };
+        _r = CreateRecognizer();
     }
-    public void Start() { 
+
+    private DictationRecognizer CreateRecognizer() {
+        var r = new DictationRecognizer();
+        r.DictationResult += OnDictationResult;
+        r.DictationHypothesis += OnDictationHypothesis;
+        r.DictationError += OnDictationError;
+        r.DictationComplete += OnDictationComplete;
+        return r;
+    }
+
+    private void OnDictationResult(string text, ConfidenceLevel confidence) {
+        MainThreadDispatcher.RunOnMainThread(() => OnSentenceCompleted?.Invoke(text));
+    }
+
+    private void OnDictationHypothesis(string text) {
+        MainThreadDispatcher.RunOnMainThread(() => OnHypothesis?.Invoke(text));
+    }
+
+    private void OnDictationError(string error, int hresult) {
+        MainThreadDispatcher.RunOnMainThread(() =>
+            OnError?.Invoke(string.IsNullOrEmpty(error) ? $"HRESULT: {hresult}" : $"{error} (HRESULT: {hresult})"));
+        ScheduleRestart(DictationCompletionCause.UnknownError);
+    }
+
+    private void OnDictationComplete(DictationCompletionCause cause) {
+        Debug.Log($"[VoiceManager] Dictation completed because: {cause}. Scheduling restart...");
+        ScheduleRestart(cause);
+    }
+
+    private static bool ShouldRecreateRecognizer(DictationCompletionCause cause) {
+        switch (cause) {
+            case DictationCompletionCause.UnknownError:
+            case DictationCompletionCause.AudioQualityFailure:
+            case DictationCompletionCause.MicrophoneUnavailable:
+            case DictationCompletionCause.NetworkFailure:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    public void Start() {
+        if (_disposed || _r == null) return;
         if (_r.Status != SpeechSystemStatus.Running) {
-            Debug.Log("[VoiceManager] Stopping PhraseRecognitionSystem to prevent conflict...");
-            if (PhraseRecognitionSystem.Status == SpeechSystemStatus.Running) {
-                PhraseRecognitionSystem.Shutdown();
+            EnsurePhraseSystemForDictation();
+            try {
+                _r.Start();
+                MainThreadDispatcher.RunOnMainThread(() => OnListeningStarted?.Invoke());
+            } catch (Exception ex) {
+                Debug.LogError($"[VoiceManager] Start failed: {ex}");
+                MainThreadDispatcher.RunOnMainThread(() => OnError?.Invoke(ex.Message));
             }
-            _r.Start(); 
         }
     }
 
-    private void Restart() {
-        if (_r.Status == SpeechSystemStatus.Running) {
-            _r.Stop();
+    private static void EnsurePhraseSystemForDictation() {
+        if (PhraseRecognitionSystem.Status == SpeechSystemStatus.Running) {
+            Debug.Log("[VoiceManager] Stopping PhraseRecognitionSystem to prevent conflict...");
+            PhraseRecognitionSystem.Shutdown();
         }
-        _r.Start();
     }
 
-    public void Dispose() { _r?.Stop(); _r?.Dispose(); }
+    /// <summary>
+    /// Dictation callbacks can run off the main thread; Stop/Start must run on the main thread.
+    /// Restarts are serialized so rapid DictationComplete events do not overlap Stop/Start (a common source of flakiness).
+    /// A short delay after Stop lets the Windows / HoloLens speech stack settle.
+    /// </summary>
+    private void ScheduleRestart(DictationCompletionCause cause) {
+        if (_disposed) return;
+        _pendingRestartCause = cause;
+        _restartPending = true;
+        if (_restartPipelineRunning) {
+            return;
+        }
+        MainThreadDispatcher.RunCoroutine(RestartPipeline());
+    }
+
+    private IEnumerator RestartPipeline() {
+        _restartPipelineRunning = true;
+        try {
+            while (_restartPending && !_disposed) {
+                _restartPending = false;
+                yield return RestartOneSession(_pendingRestartCause);
+            }
+        } finally {
+            _restartPipelineRunning = false;
+        }
+    }
+
+    private IEnumerator RestartOneSession(DictationCompletionCause cause) {
+        if (_disposed) yield break;
+
+        if (ShouldRecreateRecognizer(cause)) {
+            Debug.Log($"[VoiceManager] Recreating DictationRecognizer after {cause}.");
+            DisposeRecognizerOnly();
+            _r = CreateRecognizer();
+        } else {
+            try {
+                if (_r != null && _r.Status == SpeechSystemStatus.Running) {
+                    _r.Stop();
+                }
+            } catch (Exception ex) {
+                Debug.LogWarning($"[VoiceManager] Stop during restart: {ex.Message}");
+            }
+        }
+
+        yield return null;
+        yield return new WaitForSecondsRealtime(RestartSettleSeconds);
+
+        if (_disposed || _r == null) yield break;
+
+        EnsurePhraseSystemForDictation();
+
+        bool needSecondChance = false;
+        try {
+            _r.Start();
+            MainThreadDispatcher.RunOnMainThread(() => OnListeningStarted?.Invoke());
+        } catch (Exception ex) {
+            Debug.LogError($"[VoiceManager] Restart Start failed: {ex}");
+            MainThreadDispatcher.RunOnMainThread(() => OnError?.Invoke(ex.Message));
+            DisposeRecognizerOnly();
+            _r = CreateRecognizer();
+            needSecondChance = true;
+        }
+
+        if (needSecondChance) {
+            yield return null;
+            yield return new WaitForSecondsRealtime(RestartSettleSeconds);
+            if (_disposed || _r == null) yield break;
+            try {
+                EnsurePhraseSystemForDictation();
+                _r.Start();
+                MainThreadDispatcher.RunOnMainThread(() => OnListeningStarted?.Invoke());
+            } catch (Exception ex2) {
+                Debug.LogError($"[VoiceManager] Second-chance Start failed: {ex2}");
+                MainThreadDispatcher.RunOnMainThread(() => OnError?.Invoke(ex2.Message));
+            }
+        }
+    }
+
+    private void DisposeRecognizerOnly() {
+        if (_r == null) return;
+        try {
+            if (_r.Status == SpeechSystemStatus.Running) {
+                _r.Stop();
+            }
+        } catch (Exception ex) {
+            Debug.LogWarning($"[VoiceManager] Stop before dispose: {ex.Message}");
+        }
+        _r.DictationResult -= OnDictationResult;
+        _r.DictationHypothesis -= OnDictationHypothesis;
+        _r.DictationError -= OnDictationError;
+        _r.DictationComplete -= OnDictationComplete;
+        _r.Dispose();
+        _r = null;
+    }
+
+    public void Dispose() {
+        _disposed = true;
+        _restartPending = false;
+        DisposeRecognizerOnly();
+    }
 }
 
 public class MainThreadDispatcher : MonoBehaviour
 {
     private static readonly Queue<Action> _q = new Queue<Action>();
+    private static MainThreadDispatcher _instance;
+
     public static void RunOnMainThread(Action a) { lock (_q) { _q.Enqueue(a); } }
+
+    /// <summary>Queues a coroutine to run on the Unity main thread (for non-MonoBehaviour callers).</summary>
+    public static void RunCoroutine(IEnumerator routine) {
+        RunOnMainThread(() => {
+            if (_instance != null) {
+                _instance.StartCoroutine(routine);
+            }
+        });
+    }
+
+    private void Awake() { _instance = this; }
+
     private void Update() { lock (_q) { while (_q.Count > 0) _q.Dequeue().Invoke(); } }
+
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void Init() {
         var go = new GameObject("Dispatcher");
