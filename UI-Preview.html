@@ -130,10 +130,11 @@
       gap: 10px;
     }
     .card-body-text {
-      font-size: 15px;
+      font-size: 14px;
       color: rgba(220,235,255,0.96);
       font-weight: 500;
       line-height: 1.5;
+      overflow: hidden;
     }
     .translation-toggle {
       position: absolute;
@@ -288,7 +289,7 @@
         </div>
         <div class="card-body">
           <div>
-            <p class="card-body-text" id="asr-description">Use Automatic Speech Recognition to capture live speech from the headset and render it as readable text, with optional translation to Italian.</p>
+            <p class="card-body-text" id="asr-description">Live speech appears here. Toggle translation to view Italian text.</p>
             <div class="translation-toggle">
               <span class="translation-toggle-label">Text Translation</span>
               <span class="translation-toggle-switch" id="translation-toggle-switch"></span>
@@ -305,7 +306,7 @@
           <p class="card-title">Sign Language</p>
           <button type="button" class="asr-start-btn">Start Sign Language</button>
         </div>
-        <p class="card-body-text">Analyze and surface key sign language cues so spoken conversations are easier to follow visually.</p>
+        <p class="card-body-text">Sign language cues and key gestures appear in this view.</p>
         <img src="images/blue-signlanguage.svg" alt="Sign Language" class="signlanguage-accent-icon">
       </div>
 
@@ -314,7 +315,7 @@
           <p class="card-title">Language Translation</p>
           <button type="button" class="asr-start-btn">Start Translation</button>
         </div>
-        <p class="card-body-text">Translate recognized text into your target language so you can track the conversation in real time.</p>
+        <p class="card-body-text">Translated output appears here in the selected target language.</p>
         <img src="images/blue-translate.svg" alt="Language Translation" class="translation-accent-icon">
       </div>
     </div>
@@ -360,8 +361,8 @@
     var toggle = document.getElementById('translation-toggle-switch');
     var desc = document.getElementById('asr-description');
     if (!toggle || !desc) return;
-    var en = 'Use Automatic Speech Recognition to capture live speech from the headset and render it as readable text, with optional translation to Italian.';
-    var it = 'Usa il riconoscimento vocale automatico per catturare il parlato dal visore e mostrarlo come testo leggibile, con traduzione opzionale in italiano.';
+    var en = 'Live speech appears here. Toggle translation to view Italian text.';
+    var it = 'Il parlato in tempo reale appare qui. Attiva la traduzione per vedere il testo in italiano.';
     var on = false;
     function update() {
       if (on) {

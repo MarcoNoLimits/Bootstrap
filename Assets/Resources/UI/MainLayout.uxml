@@ -25,7 +25,7 @@
                 </ui:VisualElement>
                 <ui:VisualElement class="card-body">
                     <ui:VisualElement>
-                        <ui:Label text="Use Automatic Speech Recognition to capture live speech from the headset and render it as readable text, with optional translation to Italian." class="card-body-text" />
+                        <ui:Label text="Live speech appears here. Toggle translation to view Italian text." class="card-body-text" />
                         <ui:VisualElement name="translation-toggle" class="translation-toggle">
                             <ui:Label text="Text Translation" class="translation-toggle-label" />
                             <ui:VisualElement name="translation-toggle-switch" class="translation-toggle-switch" />
@@ -41,7 +41,7 @@
                     <ui:Label text="Sign Language" class="card-title" />
                     <ui:Button name="btn-sign-start" text="Start Sign Language" class="asr-start-btn" />
                 </ui:VisualElement>
-                <ui:Label text="Analyze and surface key sign language cues so spoken conversations are easier to follow visually." class="card-body-text" />
+                <ui:Label text="Sign language cues and key gestures appear in this view." class="card-body-text" />
                 <ui:VisualElement name="icon-signlanguage-accent" class="signlanguage-accent-icon" />
             </ui:VisualElement>
 
@@ -51,7 +51,7 @@
                     <ui:Label text="Language Translation" class="card-title" />
                     <ui:Button name="btn-translation-start" text="Start Translation" class="asr-start-btn" />
                 </ui:VisualElement>
-                <ui:Label text="Translate recognized text into your target language so you can track the conversation in real time." class="card-body-text" />
+                <ui:Label text="Translated output appears here in the selected target language." class="card-body-text" />
                 <ui:VisualElement name="icon-translation-accent" class="translation-accent-icon" />
             </ui:VisualElement>
 

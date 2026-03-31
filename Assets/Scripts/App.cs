@@ -13,14 +13,14 @@ public class App : MonoBehaviour
     
     // UI DIMENSIONS (Must match your USS/CSS)
     // We need these to center the window correctly.
-    private float _uiWidth = 920f; 
-    private float _uiHeight = 500f;
+    private float _uiWidth = 550f; 
+    private float _uiHeight = 640f;
     private float _scale = 0.001f;        // The scale we apply to the object
 
     // Horizontal offset in front of the user so the person
     // they are looking at can remain roughly centered.
     // Negative = to the left of the camera view.
-    [SerializeField] private float _horizontalOffset = -0.4f;
+    [SerializeField] private float _horizontalOffset = 0.0f;
 
     // Simple state flags other systems can read if needed
     public bool IsAsrActive { get; private set; }
@@ -96,8 +96,8 @@ public class App : MonoBehaviour
         
         // 1. Setup Render Texture
         // Match the UI dimensions exactly so it fills the quad
-        int webWidth = 920;
-        int webHeight = 500;
+        int webWidth = 550;
+        int webHeight = 640;
         RenderTexture rt = new RenderTexture(webWidth, webHeight, 24);
         rt.name = "UIRenderTexture";
 
