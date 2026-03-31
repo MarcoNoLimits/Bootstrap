@@ -1,8 +1,8 @@
 /* No padding on main container so sidebar/bottom bar lines run edge-to-edge. */
 .glass-panel {
     width: 550px;
-    height: 640px;
-    background-color: rgba(0, 0, 0, 0);
+    height: 560px;
+    background-color: rgba(2, 8, 18, 0.92);
     border-radius: 24px;
     border-color: rgba(0, 0, 0, 0);
     border-width: 0;
@@ -64,7 +64,7 @@
 
 .top-title-text {
     font-size: 18px;
-    color: #b8e0e6e4;
+    color: rgba(184, 224, 230, 0.89);
     -unity-font-style: bold;
 }
 
@@ -79,13 +79,15 @@
     border-radius: 20px;
     border-width: 2px;
     border-color: rgba(110, 185, 235, 0.48);
-    background-color: rgba(6, 26, 54, 0.6);
+    background-color: rgba(4, 18, 38, 0.88);
 }
 
 .hub-card {
     display: none;
+    flex-direction: column;
+    flex-grow: 1;
     min-height: 0;
-    background-color: rgba(60, 140, 190, 0.18);
+    background-color: rgba(8, 30, 56, 0.92);
     border-radius: 22px;
     border-width: 2px;
     border-color: rgba(110, 185, 235, 0.4);
@@ -109,7 +111,7 @@
 
 .card-title {
     font-size: 18px;
-    color: #b8e0e6e4;
+    color: rgba(184, 224, 230, 0.89);
     -unity-font-style: bold;
 }
 
@@ -134,7 +136,13 @@
 
 .card-body {
     flex-direction: row;
-    align-items: center;
+    align-items: stretch;
+    justify-content: space-between;
+    flex-grow: 1;
+}
+
+.card-content {
+    flex-grow: 1;
     justify-content: space-between;
 }
 

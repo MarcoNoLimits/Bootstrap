@@ -14,7 +14,7 @@ public class App : MonoBehaviour
     // UI DIMENSIONS (Must match your USS/CSS)
     // We need these to center the window correctly.
     private float _uiWidth = 550f; 
-    private float _uiHeight = 640f;
+    private float _uiHeight = 560f;
     private float _scale = 0.001f;        // The scale we apply to the object
 
     // Horizontal offset in front of the user so the person
@@ -97,7 +97,7 @@ public class App : MonoBehaviour
         // 1. Setup Render Texture
         // Match the UI dimensions exactly so it fills the quad
         int webWidth = 550;
-        int webHeight = 640;
+        int webHeight = 560;
         RenderTexture rt = new RenderTexture(webWidth, webHeight, 24);
         rt.name = "UIRenderTexture";
 
@@ -167,6 +167,12 @@ public class App : MonoBehaviour
 
         // 9. Brand logo and bottom-bar icons: add images to Assets/Resources/UI/
         var root = uiDoc.rootVisualElement;
+        var runtimeStyles = Resources.Load<StyleSheet>("UI/Styles");
+        if (runtimeStyles != null && !root.styleSheets.Contains(runtimeStyles))
+        {
+            root.styleSheets.Add(runtimeStyles);
+        }
+
         SetIcon(root, "brand-logo", "UI/HoloAssistLogo");
 
         // Icons still loaded so existing styles work

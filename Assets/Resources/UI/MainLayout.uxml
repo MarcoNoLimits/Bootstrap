@@ -24,7 +24,7 @@
                     <ui:Button name="btn-asr-start" text="Start ASR" class="asr-start-btn" />
                 </ui:VisualElement>
                 <ui:VisualElement class="card-body">
-                    <ui:VisualElement>
+                    <ui:VisualElement class="card-content">
                         <ui:Label name="asr-description" text="Live speech appears here. Toggle translation to view Italian text." class="card-body-text" />
                         <ui:VisualElement name="translation-toggle" class="translation-toggle">
                             <ui:Label text="Text Translation" class="translation-toggle-label" />
