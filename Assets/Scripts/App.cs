@@ -171,7 +171,7 @@ public class App : MonoBehaviour
 
         // Icons still loaded so existing styles work
         SetBottomBarIcon(root, "icon-volume", "UI/volume");
-        SetBottomBarIcon(root, "icon-microphone", "UI/microphone");
+        SetBottomBarIcon(root, "icon-microphone", "UI/ear-listen");
         SetBottomBarIcon(root, "icon-refresh", "UI/refresh");
 
         SetIcon(root, "icon-search", "UI/search");
