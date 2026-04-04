@@ -202,6 +202,12 @@
     .asr-start-btn:hover {
       box-shadow: 0 0 26px rgba(120,240,255,0.95);
     }
+    .asr-start-btn.active {
+      border-color: rgba(130, 235, 255, 0.95);
+      background: rgba(70, 180, 230, 0.85);
+      color: #04141c;
+      box-shadow: 0 0 20px rgba(120,240,255,0.7);
+    }
     .asr-volume-icon {
       position: absolute;
       right: 0px;
@@ -356,27 +362,263 @@
     setMode(current);
   })();
 
-  // Text translation toggle: swap English/Italian description
+  // Translation toggle + API ASR + mic-driven volume bars
   (function() {
     var toggle = document.getElementById('translation-toggle-switch');
     var desc = document.getElementById('asr-description');
-    if (!toggle || !desc) return;
+    var asrBtn = document.querySelector('[data-mode="asr"] .asr-start-btn');
+    var bars = Array.prototype.slice.call(document.querySelectorAll('.asr-volume-icon span'));
+    if (!toggle || !desc || !asrBtn) return;
+
+    var API_URL = 'https://thedeezat-asr-hearing-impaired-api.hf.space/audio';
+    var stream = null;
+    var audioContext = null;
+    var processor = null;
+    var source = null;
+    var uiInterval = 0;
+    var sampleRate = 16000;
+    var buffer = [];
+    var rmsSamples = [];
+    var isSpeaking = false;
+    var lastSpeechAt = 0;
+    var noiseRms = 0.01;
+    var hasSpeechInBuffer = false;
+    var isAsrRunning = false;
+    var latestAsrText = '';
+    var isSending = false;
+    var lastSendAt = 0;
+    var lastDisplayedText = '';
+
     var en = 'Live speech appears here. Toggle translation to view Italian text.';
-    var it = 'Il parlato in tempo reale appare qui. Attiva la traduzione per vedere il testo in italiano.';
+    var itPlaceholder = 'Il parlato in tempo reale appare qui. Attiva la traduzione per vedere il testo in italiano.';
     var on = false;
+    var MIN_NOISE_FLOOR = 0.005;
+    var SPEECH_MULT = 2.35;
+    var SILENCE_MS = 700;
+    var MAX_SECONDS = 28;
+    var SEND_WINDOW_SECONDS = 8.0;
+
+    function setBars(level) {
+      var active = Math.max(0, Math.min(bars.length, Math.round(level * bars.length)));
+      bars.forEach(function(bar, i) {
+        if (i < active) {
+          bar.style.opacity = '0.98';
+          bar.style.background = 'linear-gradient(to top, rgba(140,230,255,0.98), rgba(220,250,255,0.98))';
+        } else {
+          bar.style.opacity = '0.75';
+          bar.style.background = 'rgba(149, 151, 151, 0.452)';
+        }
+      });
+    }
+
+    function extractText(payload) {
+      if (!payload) return '';
+      if (typeof payload === 'string') return payload.trim();
+      return (payload.text || payload.transcript || payload.transcription || payload.result || '').toString().trim();
+    }
+
+    function normalizeCase(text) {
+      if (!text) return '';
+      var t = text.trim();
+      if (t.toUpperCase() === t && /[A-Z]/.test(t)) {
+        t = t.toLowerCase();
+      }
+      return t.charAt(0).toUpperCase() + t.slice(1);
+    }
+
+    function cleanHallucinatedPrefix(text) {
+      if (!text) return '';
+      var t = text.trim();
+      // Common startup hallucination from some ASR models.
+      t = t.replace(/^(thank you[\s,!.?:-]*)+/i, '');
+      return t.trim();
+    }
+
+    function shouldAcceptTranscript(nextText) {
+      var prev = (lastDisplayedText || '').trim();
+      var next = (nextText || '').trim();
+      if (!next) return false;
+      if (!prev) return true;
+      if (next === prev) return false;
+      // Ignore regressions where model returns a much shorter fragment.
+      if (next.split(/\s+/).length <= 2 && prev.split(/\s+/).length >= 4) {
+        return false;
+      }
+      if (next.length < Math.floor(prev.length * 0.78) && !/[.!?]$/.test(next)) {
+        return false;
+      }
+      return true;
+    }
+
+    function float32ToArrayBuffer(samples) {
+      var ab = new ArrayBuffer(samples.length * 4);
+      var view = new DataView(ab);
+      for (var i = 0; i < samples.length; i++) view.setFloat32(i * 4, samples[i], true);
+      return ab;
+    }
+
+    async function sendAudio() {
+      if (isSending) return;
+      if (!buffer.length || !hasSpeechInBuffer) {
+        return;
+      }
+      var minSamples = sampleRate * 0.22;
+      if (buffer.length < minSamples) return;
+
+      var windowSamples = Math.floor(SEND_WINDOW_SECONDS * sampleRate);
+      var start = Math.max(0, buffer.length - windowSamples);
+      var samples = buffer.slice(start);
+
+      isSending = true;
+      lastSendAt = Date.now();
+
+      try {
+        var res = await fetch(API_URL, {
+          method: 'POST',
+          headers: {
+            'X-Sample-Rate': String(sampleRate),
+            'Content-Type': 'application/octet-stream'
+          },
+          body: float32ToArrayBuffer(samples)
+        });
+        if (!res.ok) return;
+
+        var text = '';
+        try {
+          text = extractText(await res.json());
+        } catch (_) {
+          text = extractText(await res.text());
+        }
+        text = cleanHallucinatedPrefix(text);
+        if (!text) return;
+        latestAsrText = normalizeCase(text);
+        if (!shouldAcceptTranscript(latestAsrText)) return;
+        lastDisplayedText = latestAsrText;
+        update();
+      } catch (e) {
+        console.warn('[ASR] Upload failed:', e);
+      } finally {
+        isSending = false;
+      }
+    }
+
+    async function startAsr() {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      sampleRate = audioContext.sampleRate;
+      source = audioContext.createMediaStreamSource(stream);
+      processor = audioContext.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = function(e) {
+        if (!isAsrRunning) return;
+        var input = e.inputBuffer.getChannelData(0);
+        for (var i = 0; i < input.length; i++) {
+          buffer.push(input[i]);
+          rmsSamples.push(input[i]);
+          if (rmsSamples.length > 3200) rmsSamples.shift();
+        }
+        var maxSamples = Math.floor(MAX_SECONDS * sampleRate);
+        while (buffer.length > maxSamples) buffer.shift();
+      };
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+
+      isAsrRunning = true;
+      asrBtn.textContent = 'Stop ASR';
+      asrBtn.classList.add('active');
+      desc.textContent = 'Listening...';
+      isSpeaking = false;
+      lastSpeechAt = 0;
+      noiseRms = 0.01;
+      hasSpeechInBuffer = false;
+      lastDisplayedText = '';
+
+      if (uiInterval) clearInterval(uiInterval);
+      uiInterval = setInterval(function() {
+        if (!isAsrRunning || rmsSamples.length === 0) return;
+        var sum = 0;
+        for (var i = 0; i < rmsSamples.length; i++) sum += rmsSamples[i] * rmsSamples[i];
+        var rms = Math.sqrt(sum / rmsSamples.length);
+        setBars(Math.min(1, rms * 6));
+
+        var now = Date.now();
+        var speechThreshold = Math.max(MIN_NOISE_FLOOR, noiseRms * SPEECH_MULT);
+        if (rms > speechThreshold) {
+          isSpeaking = true;
+          lastSpeechAt = now;
+          hasSpeechInBuffer = true;
+        } else {
+          noiseRms = 0.98 * noiseRms + 0.02 * rms;
+          if (isSpeaking && (now - lastSpeechAt) > SILENCE_MS) {
+            isSpeaking = false;
+            sendAudio();
+          }
+        }
+
+        // Push partial chunks while speaking with context window for low latency.
+        var enoughBuffered = buffer.length >= (sampleRate * 0.9);
+        if (isSpeaking && enoughBuffered && (now - lastSendAt) > 900) {
+          sendAudio();
+        }
+      }, 140);
+    }
+
+    async function stopAsr() {
+      isAsrRunning = false;
+      asrBtn.textContent = 'Start ASR';
+      asrBtn.classList.remove('active');
+      if (uiInterval) {
+        clearInterval(uiInterval);
+        uiInterval = 0;
+      }
+      try {
+        await sendAudio();
+      } catch (_) {}
+      setBars(0);
+
+      if (processor && source) {
+        try { source.disconnect(); processor.disconnect(); } catch (e) {}
+      }
+      processor = null;
+      source = null;
+      if (audioContext) audioContext.close();
+      audioContext = null;
+      if (stream) {
+        stream.getTracks().forEach(function(track) { track.stop(); });
+      }
+      stream = null;
+      if (desc.textContent === 'Listening...') {
+        update();
+      }
+    }
+
     function update() {
       if (on) {
         toggle.classList.add('on');
-        desc.textContent = it;
+        desc.textContent = latestAsrText || itPlaceholder;
       } else {
         toggle.classList.remove('on');
-        desc.textContent = en;
+        desc.textContent = latestAsrText || en;
       }
     }
+
+    asrBtn.addEventListener('click', async function() {
+      try {
+        if (isAsrRunning) {
+          await stopAsr();
+          return;
+        }
+        await startAsr();
+      } catch (err) {
+        console.error('[ASR] Could not start microphone:', err);
+        await stopAsr();
+      }
+    });
+
     toggle.addEventListener('click', function() {
       on = !on;
       update();
     });
+
     update();
   })();
 </script>

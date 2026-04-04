@@ -1,9 +1,11 @@
 using UnityEngine;
 using UnityEngine.UIElements;
 using UnityEngine.XR.Interaction.Toolkit;
+using System.Collections.Generic;
 
 public class App : MonoBehaviour
 {
+    private const string DefaultAsrText = "Live speech appears here. Toggle translation to view Italian text.";
     private GameObject _mainUI;
     private Camera _mainCam;
     
@@ -35,6 +37,8 @@ public class App : MonoBehaviour
     private Button _btnModeSwitch;
     private VisualElement _translationToggleSwitch;
     private Label _asrDescription;
+    private VisualElement _asrVolumeIcon;
+    private readonly List<VisualElement> _volumeBars = new List<VisualElement>();
 
     private void Awake()
     {
@@ -62,6 +66,7 @@ public class App : MonoBehaviour
 
         // Run the "Tag-Along" logic every frame
         UpdatePosition(false); // false = smooth movement
+        UpdateVolumeIndicator();
     }
 
     private void UpdatePosition(bool instant)
@@ -201,11 +206,14 @@ public class App : MonoBehaviour
 
         _translationToggleSwitch = root.Q<VisualElement>("translation-toggle-switch");
         _asrDescription = root.Q<Label>("asr-description");
+        _asrVolumeIcon = root.Q<VisualElement>("icon-volume");
 
         // Optional accent icon for sign language card (bottom-right)
         SetIcon(root, "icon-signlanguage-accent", "UI/blue-signlanguage");
         // Optional accent icon for language translation card (bottom-right)
         SetIcon(root, "icon-translation-accent", "UI/blue-translate");
+
+        BuildVolumeBars();
 
         WireUiLogic();
 
@@ -213,6 +221,14 @@ public class App : MonoBehaviour
         if (HololensAsrManager.Instance != null)
         {
             HololensAsrManager.Instance.OnTextUpdated += OnAsrTextUpdated;
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (HololensAsrManager.Instance != null)
+        {
+            HololensAsrManager.Instance.OnTextUpdated -= OnAsrTextUpdated;
         }
     }
 
@@ -254,7 +270,17 @@ public class App : MonoBehaviour
             {
                 IsAsrActive = !IsAsrActive;
                 _btnAsrStart.text = IsAsrActive ? "Stop ASR" : "Start ASR";
+                _btnAsrStart.EnableInClassList("active", IsAsrActive);
                 Debug.Log(IsAsrActive ? "[ASR] Started" : "[ASR] Stopped");
+
+                if (IsAsrActive && _asrDescription != null)
+                {
+                    _asrDescription.text = "Listening...";
+                }
+                else if (!IsAsrActive && _asrDescription != null && _asrDescription.text == "Listening...")
+                {
+                    _asrDescription.text = DefaultAsrText;
+                }
 
                 if (HololensAsrManager.Instance != null)
                 {
@@ -310,7 +336,7 @@ public class App : MonoBehaviour
             // Ensure initial state is off
             IsTranslationActive = false;
             _translationToggleSwitch.RemoveFromClassList("on");
-            _asrDescription.text = en;
+            _asrDescription.text = DefaultAsrText;
         }
 
         // Initial mode
@@ -348,17 +374,53 @@ public class App : MonoBehaviour
     private void OnAsrTextUpdated(string text)
     {
         if (_asrDescription == null) return;
+        _asrDescription.text = text;
+    }
 
-        // In a real app you would pass 'text' to a translation service when
-        // IsTranslationActive is true and then display the translated result.
-        // For now we simply prefix to show the flow is working.
-        if (IsTranslationActive)
+    private void BuildVolumeBars()
+    {
+        if (_asrVolumeIcon == null) return;
+
+        _asrVolumeIcon.style.backgroundImage = StyleKeyword.None;
+        _asrVolumeIcon.Clear();
+        _volumeBars.Clear();
+
+        _asrVolumeIcon.style.flexDirection = FlexDirection.Row;
+        _asrVolumeIcon.style.alignItems = Align.FlexEnd;
+        _asrVolumeIcon.style.justifyContent = Justify.FlexEnd;
+        _asrVolumeIcon.style.gap = 2;
+
+        int[] heights = { 4, 6, 8, 10, 12, 14, 16, 18 };
+        for (int i = 0; i < heights.Length; i++)
         {
-            _asrDescription.text = "[IT] " + text;
+            var bar = new VisualElement();
+            bar.style.width = 2;
+            bar.style.height = heights[i];
+            bar.style.borderTopLeftRadius = 1;
+            bar.style.borderTopRightRadius = 1;
+            bar.style.backgroundColor = new Color(0.45f, 0.82f, 1f, 0.25f);
+            _asrVolumeIcon.Add(bar);
+            _volumeBars.Add(bar);
         }
-        else
+    }
+
+    private void UpdateVolumeIndicator()
+    {
+        if (_volumeBars.Count == 0) return;
+
+        float level = 0f;
+        if (IsAsrActive && HololensAsrManager.Instance != null)
         {
-            _asrDescription.text = text;
+            level = HololensAsrManager.Instance.CurrentMicLevel;
+        }
+
+        int activeBars = Mathf.RoundToInt(level * _volumeBars.Count);
+        for (int i = 0; i < _volumeBars.Count; i++)
+        {
+            bool active = i < activeBars;
+            _volumeBars[i].style.backgroundColor = active
+                ? new Color(0.55f, 0.9f, 1f, 0.95f)
+                : new Color(0.58f, 0.59f, 0.59f, 0.45f);
         }
     }
 

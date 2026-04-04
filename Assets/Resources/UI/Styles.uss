@@ -208,6 +208,12 @@
     -unity-font-style: bold;
 }
 
+.asr-start-btn.active {
+    border-color: rgba(130, 235, 255, 0.95);
+    background-color: rgba(70, 180, 230, 0.85);
+    color: rgba(4, 20, 28, 1);
+}
+
 .asr-volume-icon {
     position: absolute;
     right: 16px;
