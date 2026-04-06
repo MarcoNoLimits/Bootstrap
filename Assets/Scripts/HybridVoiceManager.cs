@@ -10,6 +10,9 @@ using UnityEngine;
 /// </summary>
 public sealed class HybridVoiceManager : IDisposable
 {
+    /// <summary>Shown on subtitle when falling back to device dictation (not an error).</summary>
+    public const string AsrFallbackUserMessage = "Switching to another ASR model";
+
     private readonly MonoBehaviour _host;
     private readonly string _primaryApiUrl;
     private readonly int _fallbackAfterConsecutiveApiFailures;
@@ -109,7 +112,7 @@ public sealed class HybridVoiceManager : IDisposable
         Debug.LogWarning("[HybridVoice] Unity Microphone failed — switching to HoloLens dictation (same as before API).");
         MainThreadDispatcher.RunOnMainThread(() =>
         {
-            OnError?.Invoke("Unity Microphone did not start. Using HoloLens dictation.");
+            OnError?.Invoke(AsrFallbackUserMessage);
             SwitchToDictationFallback();
         });
     }
@@ -129,7 +132,7 @@ public sealed class HybridVoiceManager : IDisposable
             Debug.LogWarning(
                 "[HybridVoice] Custom ASR API failed repeatedly — switching to HoloLens / Windows dictation.");
             MainThreadDispatcher.RunOnMainThread(() =>
-                OnError?.Invoke("ASR API not reachable. Switched to HoloLens dictation fallback."));
+                OnError?.Invoke(AsrFallbackUserMessage));
             SwitchToDictationFallback();
         }
     }
@@ -189,7 +192,7 @@ public sealed class HybridVoiceManager : IDisposable
             if (userSpeakingRecently && noTranscriptTooLong)
             {
                 MainThreadDispatcher.RunOnMainThread(() =>
-                    OnError?.Invoke("ASR API is not returning speech while mic is active. Switched to HoloLens dictation fallback."));
+                    OnError?.Invoke(AsrFallbackUserMessage));
                 SwitchToDictationFallback();
                 yield break;
             }

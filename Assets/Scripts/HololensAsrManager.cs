@@ -12,6 +12,8 @@ public class HololensAsrManager : MonoBehaviour
 
     public bool IsRunning { get; private set; }
     public float CurrentMicLevel { get; private set; }
+    /// <summary>True while POST /audio is in flight. Remote cold starts can exceed 60s; UI should not treat this as "no speech".</summary>
+    public bool IsApiRequestInFlight => _requestInFlight;
 
     public delegate void TextUpdatedHandler(string text);
     public event TextUpdatedHandler OnTextUpdated;

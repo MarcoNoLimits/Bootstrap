@@ -41,8 +41,8 @@ public class WizardOfOzClient : MonoBehaviour
     private UIManager _uiManager;
 
     [Header("Voice UI")]
-    [Tooltip("How long to wait (after last listening/hypothesis activity) before showing a stall hint. HoloLens often needs 45s+ before a final result.")]
-    [SerializeField] private float listeningStallSeconds = 55f;
+    [Tooltip("How long to wait (after last listening/hypothesis activity or ASR HTTP completion) before showing a stall hint. Remote ASR first request can be slow; see also skip while request in flight.")]
+    [SerializeField] private float listeningStallSeconds = 90f;
 
     [Tooltip("Minimum time between stall messages so they do not spam every stall interval.")]
     [SerializeField] private float stallMessageCooldownSeconds = 120f;
@@ -167,7 +167,7 @@ public class WizardOfOzClient : MonoBehaviour
         if (_mainCam != null)
         {
             Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.5f);
-            target += Vector3.down * 0.4f;
+            target += Vector3.down * 0.24f;
             _mainUIRoot.transform.position = target;
             _mainUIRoot.transform.LookAt(_mainCam.transform);
             _mainUIRoot.transform.Rotate(0, 180, 0);
@@ -217,7 +217,11 @@ public class WizardOfOzClient : MonoBehaviour
 
         _voice.OnError += (err) => MainThreadDispatcher.RunOnMainThread(() => {
             _listeningStallDeadline = -1f;
-            _uiManager.UpdateText($"Error: {err}");
+            if (string.IsNullOrEmpty(err)) return;
+            if (err.StartsWith(HybridVoiceManager.AsrFallbackUserMessage, StringComparison.Ordinal))
+                _uiManager.UpdateText(err);
+            else
+                _uiManager.UpdateText($"Error: {err}");
         });
     }
 
@@ -226,16 +230,18 @@ public class WizardOfOzClient : MonoBehaviour
         if (_mainUIRoot != null && _mainCam != null)
         {
             Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.5f);
-            target += Vector3.down * 0.4f;
+            target += Vector3.down * 0.24f;
             _mainUIRoot.transform.position = Vector3.Lerp(_mainUIRoot.transform.position, target, Time.deltaTime * 4.0f);
             _mainUIRoot.transform.LookAt(_mainCam.transform);
             _mainUIRoot.transform.Rotate(0, 180, 0);
         }
 
+        // Do not show stall while an ASR HTTP request is still running (cold remote can take >60s; deadline only refreshes on response).
         if (showListeningStallHint
             && _listeningStallDeadline > 0f
             && Time.time >= _listeningStallDeadline
-            && _uiManager != null)
+            && _uiManager != null
+            && !(HololensAsrManager.Instance != null && HololensAsrManager.Instance.IsApiRequestInFlight))
         {
             if (Time.time < _nextStallMessageAllowedTime)
             {

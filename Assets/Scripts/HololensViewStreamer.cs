@@ -54,8 +54,9 @@ public class HololensViewStreamer : MonoBehaviour
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
+      justify-content: flex-start;
       padding: 24px;
+      padding-top: 32px;
       overflow-x: hidden;
     }
     .container {
