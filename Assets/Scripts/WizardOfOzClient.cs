@@ -19,6 +19,16 @@ public class WizardOfOzClient : MonoBehaviour
     public string serverIP = "localhost";
     public int serverPort = 18080;
 
+    [Header("ASR")]
+    [Tooltip("Primary transcribe URL (POST float32 LE mono, application/octet-stream, X-Sample-Rate; JSON { \"text\" }). Default: HF API. Clear to use only HoloLens / Windows dictation.")]
+    [SerializeField] private string asrApiUrl = "https://thedeezat-asr-hearing-impaired-api.hf.space/audio";
+
+    [Tooltip("After this many consecutive failed HTTP requests, switch to built-in dictation.")]
+    [SerializeField] private int asrFallbackAfterConsecutiveFailures = 5;
+
+    [Tooltip("API-only: seconds of silence after the last transcript before sending a finalized phrase (translation). Dictation fallback ignores this.")]
+    [SerializeField] private float asrPhraseEndSilenceSeconds = 0.65f;
+
     // UI Master Components (from legacy App.cs)
     private GameObject _mainUIRoot;
     private Camera _mainCam;
@@ -27,7 +37,7 @@ public class WizardOfOzClient : MonoBehaviour
 
     // Sub-Managers
     private NetworkManager _network;
-    private VoiceManager _voice;
+    private HybridVoiceManager _voice;
     private UIManager _uiManager;
 
     [Header("Voice UI")]
@@ -80,10 +90,11 @@ public class WizardOfOzClient : MonoBehaviour
             try {
                 _uiManager = new UIManager(_uiDoc);
                 _network = new NetworkManager(serverIP, serverPort);
-                _voice = new VoiceManager();
+                _voice = new HybridVoiceManager(this, asrApiUrl, asrFallbackAfterConsecutiveFailures, asrPhraseEndSilenceSeconds);
 
                 WireEvents();
                 _voice.Start();
+                SubscribeAsrDiagnostics();
                 
                 Debug.Log("[WizardOfOz] System READY.");
             } catch (Exception e) {
@@ -188,6 +199,11 @@ public class WizardOfOzClient : MonoBehaviour
             }
         });
 
+        _voice.OnSpeechBargeIn += () => MainThreadDispatcher.RunOnMainThread(() => {
+            _listeningStallDeadline = Time.time + listeningStallSeconds;
+            _uiManager.UpdateText("Listening…");
+        });
+
         _voice.OnSentenceCompleted += (text) => {
             MainThreadDispatcher.RunOnMainThread(() => {
                 _listeningStallDeadline = -1f;
@@ -244,8 +260,26 @@ public class WizardOfOzClient : MonoBehaviour
         }
     }
 
+    private void SubscribeAsrDiagnostics()
+    {
+        if (HololensAsrManager.Instance == null) return;
+        HololensAsrManager.Instance.OnStatusMessage -= OnAsrStatusForUi;
+        HololensAsrManager.Instance.OnStatusMessage += OnAsrStatusForUi;
+    }
+
+    private void OnAsrStatusForUi(string msg)
+    {
+        MainThreadDispatcher.RunOnMainThread(() =>
+        {
+            if (_uiManager != null)
+                _uiManager.UpdateText(msg);
+        });
+    }
+
     private void OnDestroy()
     {
+        if (HololensAsrManager.Instance != null)
+            HololensAsrManager.Instance.OnStatusMessage -= OnAsrStatusForUi;
         _voice?.Dispose();
         _uiRT?.Release();
     }
@@ -257,7 +291,6 @@ public class UIManager
 {
     private Label _label;
     private Button _startBtn;
-    private bool _isRunning = false;
 
     public System.Action OnStartPressed;
     public System.Action OnStopPressed;

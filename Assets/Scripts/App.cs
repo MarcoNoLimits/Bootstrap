@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 using UnityEngine.UIElements;
 using UnityEngine.XR.Interaction.Toolkit;
@@ -9,36 +10,22 @@ public class App : MonoBehaviour
     private GameObject _mainUI;
     private Camera _mainCam;
     
-    // --- SETTINGS ---
-    private float _distance = 1.5f;      // How far away (Meters)
-    private float _smoothSpeed = 4.0f;    // How fast it catches up to you
-    
-    // UI DIMENSIONS (Must match your USS/CSS)
-    // We need these to center the window correctly.
-    private float _uiWidth = 550f; 
-    private float _uiHeight = 560f;
-    private float _scale = 0.001f;        // The scale we apply to the object
+    [Header("World placement")]
+    [SerializeField] private float _distance = 1.5f;
+    [SerializeField] private float _smoothSpeed = 4f;
+    [Tooltip("Positive = right side of the view (camera +X).")]
+    [SerializeField] private float _rightOffsetMeters = 0.22f;
+    [Tooltip("Optional vertical nudge (camera +Y).")]
+    [SerializeField] private float _verticalOffsetMeters = 0f;
 
-    // Horizontal offset in front of the user so the person
-    // they are looking at can remain roughly centered.
-    // Negative = to the left of the camera view.
-    [SerializeField] private float _horizontalOffset = 0.0f;
+    // UI DIMENSIONS (must match USS .glass-panel-minimal)
+    private float _uiWidth = 180f;
+    private float _uiHeight = 400f;
+    private float _scale = 0.001f;
 
-    // Simple state flags other systems can read if needed
-    public bool IsAsrActive { get; private set; }
-    public bool IsTranslationActive { get; private set; }
-
-    private VisualElement _cardAsr;
-    private VisualElement _cardSign;
-    private VisualElement _cardTranslation;
-    private Button _btnAsrStart;
-    private Button _btnSignStart;
-    private Button _btnTranslationStart;
-    private Button _btnModeSwitch;
-    private VisualElement _translationToggleSwitch;
-    private Label _asrDescription;
-    private VisualElement _asrVolumeIcon;
-    private readonly List<VisualElement> _volumeBars = new List<VisualElement>();
+    private bool _audioOn;
+    private Coroutine _slrFlashRoutine;
+    private Coroutine _settingsFlashRoutine;
 
     private void Awake()
     {
@@ -66,19 +53,18 @@ public class App : MonoBehaviour
 
         // Run the "Tag-Along" logic every frame
         UpdatePosition(false); // false = smooth movement
-        UpdateVolumeIndicator();
     }
 
     private void UpdatePosition(bool instant)
     {
         if (_mainUI == null) return;
 
-        // 1. Target Position: In front of camera, slightly offset horizontally
-        Vector3 forward = _mainCam.transform.forward;
-        Vector3 right = _mainCam.transform.right;
-        Vector3 targetPos = _mainCam.transform.position
-                            + (forward * _distance)
-                            + (right * _horizontalOffset);
+        // 1. Target position: in front of camera, shifted to the right (not centered)
+        Transform cam = _mainCam.transform;
+        Vector3 targetPos = cam.position
+            + cam.forward * _distance
+            + cam.right * _rightOffsetMeters
+            + cam.up * _verticalOffsetMeters;
 
         // 2. Move
         if (instant)
@@ -101,8 +87,8 @@ public class App : MonoBehaviour
         
         // 1. Setup Render Texture
         // Match the UI dimensions exactly so it fills the quad
-        int webWidth = 550;
-        int webHeight = 560;
+        int webWidth = Mathf.RoundToInt(_uiWidth);
+        int webHeight = Mathf.RoundToInt(_uiHeight);
         RenderTexture rt = new RenderTexture(webWidth, webHeight, 24);
         rt.name = "UIRenderTexture";
 
@@ -114,6 +100,7 @@ public class App : MonoBehaviour
         runtimeSettings.scaleMode = PanelScaleMode.ConstantPixelSize; // Maps 1:1 to texture
         runtimeSettings.scale = 1.0f;
         runtimeSettings.clearColor = true;
+        runtimeSettings.colorClearValue = Color.clear;
 
         // 3. Setup UIDocument
         GameObject uiLogicObject = new GameObject("UILogic");
@@ -122,21 +109,15 @@ public class App : MonoBehaviour
         uiDoc.visualTreeAsset = Resources.Load<VisualTreeAsset>("UI/MainLayout");
         uiDoc.panelSettings = runtimeSettings;
 
-        // 4. Create the Quad to display the texture
+        // 4. Quad + MeshCollider (must match rendered UI): BoxCollider hits do not give mesh UVs; manual
+        // local→panel mapping was wrong for top/bottom rows after LookAt, so only the middle (SLR) worked.
         GameObject quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
         quad.transform.SetParent(_mainUI.transform, false);
         quad.name = "UIQuad";
 
-        // Replace MeshCollider with BoxCollider for better XRI detection
-        Collider meshCollider = quad.GetComponent<Collider>();
-        if (meshCollider != null) Destroy(meshCollider);
-        
-        BoxCollider boxCol = quad.AddComponent<BoxCollider>();
-        boxCol.size = new Vector3(1, 1, 0.05f); // Thin box
-        
-        // Add rudimentary interaction support? 
-        // For now, just getting visuals back is priority #1.
-        // We will add the bridge script in the next step.
+        var uiMeshCollider = quad.GetComponent<MeshCollider>();
+        uiMeshCollider.sharedMesh = quad.GetComponent<MeshFilter>().sharedMesh;
+        uiMeshCollider.convex = false;
 
         // 5. Material Setup
         // Unlit/Transparent is standard. 
@@ -157,330 +138,69 @@ public class App : MonoBehaviour
         var bridge = _mainUI.AddComponent<WorldUIInputBridge>();
         bridge.uiDoc = uiDoc;
         bridge.renderTexture = rt;
-        bridge.targetCollider = boxCol;
+        bridge.targetCollider = uiMeshCollider;
         
         // 8. XR Interaction Setup
         // Add XRSimpleInteractable so hand rays can "Select" (Click) the Quad
         var interactable = _mainUI.AddComponent<XRSimpleInteractable>();
         interactable.colliders.Clear();
-        interactable.colliders.Add(boxCol);
+        interactable.colliders.Add(uiMeshCollider);
         
         // Wire up the event
         interactable.selectEntered.AddListener(bridge.OnSelectEntered);
         interactable.hoverEntered.AddListener(bridge.OnHoverEntered);
         interactable.hoverExited.AddListener(bridge.OnHoverExited);
 
-        // 9. Brand logo and bottom-bar icons: add images to Assets/Resources/UI/
+        // 9. Root UI + debug strip (ignore picks so hits go to buttons)
         var root = uiDoc.rootVisualElement;
-        var runtimeStyles = Resources.Load<StyleSheet>("UI/Styles");
-        if (runtimeStyles != null && !root.styleSheets.Contains(runtimeStyles))
+
+        // 10. Pinch / click feedback (placeholder until wired to real audio / SLR / settings)
+        var btnAudio = root.Q<Button>("btn-audio-toggle");
+        if (btnAudio != null)
         {
-            root.styleSheets.Add(runtimeStyles);
-        }
-
-        SetIcon(root, "brand-logo", "UI/HoloAssistLogo");
-
-        // Icons still loaded so existing styles work
-        SetBottomBarIcon(root, "icon-volume", "UI/volume");
-        SetBottomBarIcon(root, "icon-microphone", "UI/ear-listen");
-        SetBottomBarIcon(root, "icon-refresh", "UI/refresh");
-
-        SetIcon(root, "icon-search", "UI/search");
-        SetIcon(root, "nav-icon-asr", "UI/ASR");
-        SetIcon(root, "nav-icon-translation", "UI/language");
-        SetIcon(root, "nav-icon-sign-language", "UI/sign-language");
-        SetIcon(root, "nav-icon-notifications", "UI/notification");
-        SetIcon(root, "nav-icon-privacy", "UI/privacy");
-        SetIcon(root, "nav-icon-help", "UI/help");
-        SetIcon(root, "nav-icon-about", "UI/about");
-
-        // Grab cards and buttons for mode switching / ASR control
-        _cardAsr = root.Q<VisualElement>("card-asr");
-        _cardSign = root.Q<VisualElement>("card-sign");
-        _cardTranslation = root.Q<VisualElement>("card-translation");
-
-        _btnAsrStart = root.Q<Button>("btn-asr-start");
-        _btnSignStart = root.Q<Button>("btn-sign-start");
-        _btnTranslationStart = root.Q<Button>("btn-translation-start");
-        _btnModeSwitch = root.Q<Button>("btn-mode-switch");
-
-        _translationToggleSwitch = root.Q<VisualElement>("translation-toggle-switch");
-        _asrDescription = root.Q<Label>("asr-description");
-        _asrVolumeIcon = root.Q<VisualElement>("icon-volume");
-
-        // Optional accent icon for sign language card (bottom-right)
-        SetIcon(root, "icon-signlanguage-accent", "UI/blue-signlanguage");
-        // Optional accent icon for language translation card (bottom-right)
-        SetIcon(root, "icon-translation-accent", "UI/blue-translate");
-
-        BuildVolumeBars();
-
-        WireUiLogic();
-
-        // Subscribe to ASR text updates if the manager exists in the scene.
-        if (HololensAsrManager.Instance != null)
-        {
-            HololensAsrManager.Instance.OnTextUpdated += OnAsrTextUpdated;
-        }
-    }
-
-    private void OnDestroy()
-    {
-        if (HololensAsrManager.Instance != null)
-        {
-            HololensAsrManager.Instance.OnTextUpdated -= OnAsrTextUpdated;
-        }
-    }
-
-    private enum Mode
-    {
-        Asr,
-        Sign,
-        Translation
-    }
-
-    private Mode _currentMode = Mode.Asr;
-
-    private void WireUiLogic()
-    {
-        // Mode button – cycle between cards
-        if (_btnModeSwitch != null)
-        {
-            _btnModeSwitch.clicked += () =>
+            btnAudio.clicked += () =>
             {
-                switch (_currentMode)
-                {
-                    case Mode.Asr:
-                        SetMode(Mode.Sign);
-                        break;
-                    case Mode.Sign:
-                        SetMode(Mode.Translation);
-                        break;
-                    default:
-                        SetMode(Mode.Asr);
-                        break;
-                }
+                _audioOn = !_audioOn;
+                btnAudio.text = _audioOn ? "Audio · On" : "Audio · Off";
+                btnAudio.EnableInClassList("action-rail-btn-on", _audioOn);
             };
         }
 
-        // ASR start / stop
-        if (_btnAsrStart != null)
+        var btnSlr = root.Q<Button>("btn-slr-capture");
+        if (btnSlr != null)
         {
-            _btnAsrStart.clicked += () =>
+            btnSlr.clicked += () =>
             {
-                IsAsrActive = !IsAsrActive;
-                _btnAsrStart.text = IsAsrActive ? "Stop ASR" : "Start ASR";
-                _btnAsrStart.EnableInClassList("active", IsAsrActive);
-                Debug.Log(IsAsrActive ? "[ASR] Started" : "[ASR] Stopped");
-
-                if (IsAsrActive && _asrDescription != null)
-                {
-                    _asrDescription.text = "Listening...";
-                }
-                else if (!IsAsrActive && _asrDescription != null && _asrDescription.text == "Listening...")
-                {
-                    _asrDescription.text = DefaultAsrText;
-                }
-
-                if (HololensAsrManager.Instance != null)
-                {
-                    if (IsAsrActive)
-                    {
-                        HololensAsrManager.Instance.StartAsr();
-                    }
-                    else
-                    {
-                        HololensAsrManager.Instance.StopAsr();
-                    }
-                }
+                if (_slrFlashRoutine != null) StopCoroutine(_slrFlashRoutine);
+                _slrFlashRoutine = StartCoroutine(FlashButtonLabel(btnSlr, "SLR", "Captured!", "action-rail-btn-flash", 0.75f));
             };
         }
 
-        // Sign language start / stop
-        if (_btnSignStart != null)
+        var btnSettingsRail = root.Q<Button>("btn-settings-rail");
+        if (btnSettingsRail != null)
         {
-            _btnSignStart.clicked += () =>
+            btnSettingsRail.clicked += () =>
             {
-                bool active = _btnSignStart.text.StartsWith("Start");
-                _btnSignStart.text = active ? "Stop Sign Language" : "Start Sign Language";
-                Debug.Log(active ? "[Sign] Started" : "[Sign] Stopped");
+                if (_settingsFlashRoutine != null) StopCoroutine(_settingsFlashRoutine);
+                _settingsFlashRoutine = StartCoroutine(FlashButtonLabel(btnSettingsRail, "Settings", "Saved", "action-rail-btn-flash", 0.65f));
             };
         }
 
-        // Translation card start / stop
-        if (_btnTranslationStart != null)
+        var debugHudLabel = root.Q<Label>("xr-debug-hud");
+        if (debugHudLabel != null)
         {
-            _btnTranslationStart.clicked += () =>
-            {
-                bool active = _btnTranslationStart.text.StartsWith("Start");
-                _btnTranslationStart.text = active ? "Stop Translation" : "Start Translation";
-                Debug.Log(active ? "[Translation] Started" : "[Translation] Stopped");
-            };
-        }
-
-        // Translation toggle inside ASR card (visual on/off)
-        if (_translationToggleSwitch != null && _asrDescription != null)
-        {
-            string en = "Use Automatic Speech Recognition to capture live speech from the headset and render it as readable text, with optional translation to Italian.";
-            string it = "Usa il riconoscimento vocale automatico per catturare il parlato dal visore e mostrarlo come testo leggibile, con traduzione opzionale in italiano.";
-
-            _translationToggleSwitch.RegisterCallback<ClickEvent>(_ =>
-            {
-                IsTranslationActive = !IsTranslationActive;
-                _translationToggleSwitch.ToggleInClassList("on");
-                // When toggling, keep whatever live text we currently have, just
-                // switch between English and Italian variants where possible.
-                Debug.Log(IsTranslationActive ? "[ASR] Italian translation ON" : "[ASR] Italian translation OFF");
-            });
-
-            // Ensure initial state is off
-            IsTranslationActive = false;
-            _translationToggleSwitch.RemoveFromClassList("on");
-            _asrDescription.text = DefaultAsrText;
-        }
-
-        // Initial mode
-        SetMode(_currentMode);
-    }
-
-    private void SetMode(Mode mode)
-    {
-        _currentMode = mode;
-
-        if (_cardAsr != null)
-            _cardAsr.style.display = mode == Mode.Asr ? DisplayStyle.Flex : DisplayStyle.None;
-        if (_cardSign != null)
-            _cardSign.style.display = mode == Mode.Sign ? DisplayStyle.Flex : DisplayStyle.None;
-        if (_cardTranslation != null)
-            _cardTranslation.style.display = mode == Mode.Translation ? DisplayStyle.Flex : DisplayStyle.None;
-
-        if (_btnModeSwitch != null)
-        {
-            switch (mode)
-            {
-                case Mode.Asr:
-                    _btnModeSwitch.text = "Sign Language";
-                    break;
-                case Mode.Sign:
-                    _btnModeSwitch.text = "Language Translation";
-                    break;
-                case Mode.Translation:
-                    _btnModeSwitch.text = "Back to ASR";
-                    break;
-            }
+            debugHudLabel.pickingMode = PickingMode.Ignore;
+            var logger = _mainUI.AddComponent<XRDebugLogger>();
+            logger.statusLabel = debugHudLabel;
         }
     }
 
-    private void OnAsrTextUpdated(string text)
+    private IEnumerator FlashButtonLabel(Button btn, string defaultText, string flashText, string flashClass, float seconds)
     {
-        if (_asrDescription == null) return;
-        _asrDescription.text = text;
-    }
-
-    private void BuildVolumeBars()
-    {
-        if (_asrVolumeIcon == null) return;
-
-        _asrVolumeIcon.style.backgroundImage = StyleKeyword.None;
-        _asrVolumeIcon.Clear();
-        _volumeBars.Clear();
-
-        _asrVolumeIcon.style.flexDirection = FlexDirection.Row;
-        _asrVolumeIcon.style.alignItems = Align.FlexEnd;
-        _asrVolumeIcon.style.justifyContent = Justify.FlexEnd;
-        _asrVolumeIcon.style.gap = 2;
-
-        int[] heights = { 4, 6, 8, 10, 12, 14, 16, 18 };
-        for (int i = 0; i < heights.Length; i++)
-        {
-            var bar = new VisualElement();
-            bar.style.width = 2;
-            bar.style.height = heights[i];
-            bar.style.borderTopLeftRadius = 1;
-            bar.style.borderTopRightRadius = 1;
-            bar.style.backgroundColor = new Color(0.45f, 0.82f, 1f, 0.25f);
-            _asrVolumeIcon.Add(bar);
-            _volumeBars.Add(bar);
-        }
-    }
-
-    private void UpdateVolumeIndicator()
-    {
-        if (_volumeBars.Count == 0) return;
-
-        float level = 0f;
-        if (IsAsrActive && HololensAsrManager.Instance != null)
-        {
-            level = HololensAsrManager.Instance.CurrentMicLevel;
-        }
-
-        int activeBars = Mathf.RoundToInt(level * _volumeBars.Count);
-        for (int i = 0; i < _volumeBars.Count; i++)
-        {
-            bool active = i < activeBars;
-            _volumeBars[i].style.backgroundColor = active
-                ? new Color(0.55f, 0.9f, 1f, 0.95f)
-                : new Color(0.58f, 0.59f, 0.59f, 0.45f);
-        }
-    }
-
-    private static void SetBottomBarIcon(VisualElement root, string elementName, string resourcePath)
-    {
-        SetIcon(root, elementName, resourcePath);
-    }
-
-    private static void SetIcon(VisualElement root, string elementName, string resourcePath)
-    {
-        var el = root.Q<VisualElement>(elementName);
-        if (el == null)
-        {
-            Debug.LogWarning($"[UI] Element '{elementName}' not found in UXML.");
-            return;
-        }
-
-        // --- BULLETPROOF LOADING ---
-        // 1) Try to find a VectorImage first (UI Toolkit preference)
-        var vectorImages = Resources.LoadAll<VectorImage>(resourcePath);
-        if (vectorImages.Length > 0)
-        {
-            el.style.backgroundImage = new StyleBackground(Background.FromVectorImage(vectorImages[0]));
-            return;
-        }
-
-        // 2) Try to find a Sprite
-        var sprites = Resources.LoadAll<Sprite>(resourcePath);
-        if (sprites.Length > 0)
-        {
-            // Prefer sprites with textures
-            foreach (var s in sprites)
-            {
-                if (s.texture != null)
-                {
-                    el.style.backgroundImage = Background.FromSprite(s);
-                    return;
-                }
-            }
-            // Fallback to textureless sprite (will likely warn but we've tried)
-            el.style.backgroundImage = Background.FromSprite(sprites[0]);
-            return;
-        }
-
-        // 3) Try to find a Texture2D (PNG/Logo)
-        var textures = Resources.LoadAll<Texture2D>(resourcePath);
-        if (textures.Length > 0)
-        {
-            el.style.backgroundImage = Background.FromTexture2D(textures[0]);
-            return;
-        }
-
-        // 4) Diagnostics (if everything failed)
-        Object[] all = Resources.LoadAll(resourcePath);
-        if (all.Length == 0)
-        {
-            Debug.LogError($"[UI] Failed to find ANY resource at path: '{resourcePath}' for element '{elementName}'.");
-            return;
-        }
-
-        Debug.LogError($"[UI] Found {all.Length} assets at '{resourcePath}', but none are suitable (1st is {all[0].GetType().Name}). Check Import Settings.");
+        btn.EnableInClassList(flashClass, true);
+        btn.text = flashText;
+        yield return new WaitForSeconds(seconds);
+        btn.EnableInClassList(flashClass, false);
+        btn.text = defaultText;
     }
 }

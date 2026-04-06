@@ -5,22 +5,20 @@ using System.Collections.Generic;
 
 public class XRDebugLogger : MonoBehaviour
 {
-    public Button debugButton; // We'll re-use the settings button to show text
+    [Tooltip("Small label under the rail — keeps Settings button free for real feedback.")]
+    public Label statusLabel;
+
     private List<InputDevice> _devices = new List<InputDevice>();
 
     void Update()
     {
-        if (debugButton == null) return;
+        if (statusLabel == null) return;
 
         string status = "Hands: ";
         GetDeviceStatus(XRNode.LeftHand, ref status);
         GetDeviceStatus(XRNode.RightHand, ref status);
-        
-        // Also check Head
-        // GetDeviceStatus(XRNode.Head, ref status);
 
-        // Update UI (throttled?) - performing every frame is fine for simple text
-        debugButton.text = status;
+        statusLabel.text = status;
     }
 
     void GetDeviceStatus(XRNode node, ref string status)

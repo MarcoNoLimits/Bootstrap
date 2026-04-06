@@ -89,10 +89,11 @@ public class HololensViewStreamer : MonoBehaviour
       font-size: 0.8rem;
       font-weight: 600;
     }
+    /* Height follows stream aspect (set from first frame) — avoids letterboxing vs fixed 16:9. */
     .viewer {
       position: relative;
       width: 100%;
-      aspect-ratio: 16/9;
+      aspect-ratio: 16 / 9;
       background: rgba(0,0,0,0.3);
       border-radius: 14px;
       overflow: hidden;
@@ -146,6 +147,8 @@ public class HololensViewStreamer : MonoBehaviour
       var status = document.getElementById('status');
       var interval = 1000 / 30;
       var failed = 0;
+      var viewer = img.parentElement;
+      var lastSize = '';
       function tick() {
         img.src = '/frame?t=' + Date.now();
       }
@@ -155,6 +158,14 @@ public class HololensViewStreamer : MonoBehaviour
         status.classList.add('live');
         status.classList.remove('error');
         failed = 0;
+        var nw = img.naturalWidth, nh = img.naturalHeight;
+        if (nw > 0 && nh > 0) {
+          var key = nw + 'x' + nh;
+          if (key !== lastSize) {
+            lastSize = key;
+            viewer.style.aspectRatio = nw + ' / ' + nh;
+          }
+        }
       };
       img.onerror = function() {
         failed++;

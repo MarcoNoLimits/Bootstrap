@@ -11,30 +11,31 @@
     overflow: hidden;
 }
 
-.status-bar {
+/* Main HUD: only the action rail — no large plate (must match App.cs render texture size). */
+.glass-panel-minimal {
+    width: 180px;
+    height: 400px;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    padding: 0;
+    overflow: visible;
+}
+
+.row {
     flex-direction: row;
-    align-items: center;
-    gap: 6px;
+    flex-grow: 1;
 }
 
-.status-icon {
-    width: 20px;
-    height: 20px;
-    margin-right: 2px;
-    -unity-background-scale-mode: scale-to-fit;
-    -unity-background-image-tint-color: white;
+.row-minimal {
+    flex-grow: 1;
+    align-items: stretch;
 }
 
-.status-text {
-    font-size: 14px;
-    color: rgba(245, 245, 255, 0.98);
-    -unity-font-style: bold;
-}
-
-.top-bar {
-    height: 56px;
-    flex-direction: row;
-    align-items: center;
+.center-panel {
+    flex-grow: 2;
+    flex-direction: column;
+    padding: 0;
+    align-items: stretch;
     justify-content: space-between;
     padding-left: 18px;
     padding-right: 22px;
@@ -378,6 +379,88 @@
     margin-right: 16px;
     -unity-background-scale-mode: scale-to-fit;
     -unity-background-image-tint-color: white;
+}
+
+/* Vertical rail: full width of minimal panel so XR ray UVs hit buttons, not empty space. */
+.action-rail {
+    width: 100%;
+    flex-grow: 1;
+    flex-shrink: 0;
+    flex-direction: column;
+    justify-content: center;
+    align-items: stretch;
+    align-self: stretch;
+    padding-top: 16px;
+    padding-bottom: 16px;
+    padding-left: 12px;
+    padding-right: 12px;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    border-radius: 18px;
+}
+
+.action-rail-btn {
+    min-height: 56px;
+    margin-bottom: 14px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    padding-left: 10px;
+    padding-right: 10px;
+    background-color: rgba(50, 120, 200, 0.75);
+    color: rgba(255, 255, 255, 0.98);
+    font-size: 16px;
+    -unity-font-style: bold;
+    border-radius: 12px;
+    border-width: 0;
+    -unity-text-align: middle-center;
+    white-space: normal;
+}
+
+.action-rail-btn:hover {
+    background-color: rgba(70, 140, 220, 0.88);
+}
+
+.action-rail-btn:active {
+    background-color: rgba(40, 100, 180, 0.95);
+}
+
+.action-rail-btn-outline {
+    background-color: transparent;
+    border-width: 2px;
+    border-color: rgba(255, 255, 255, 0.38);
+}
+
+.action-rail-btn-outline:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.action-rail-btn-last {
+    margin-bottom: 0;
+}
+
+/* Audio “on” state after pinch (class toggled from App.cs) */
+.action-rail-btn-on {
+    background-color: rgba(40, 160, 90, 0.92);
+}
+
+.action-rail-btn-on:hover {
+    background-color: rgba(50, 185, 105, 0.95);
+}
+
+/* Brief pinch feedback for SLR / Settings */
+.action-rail-btn-flash {
+    background-color: rgba(255, 200, 80, 0.95);
+    color: rgba(30, 25, 10, 0.98);
+}
+
+.xr-debug-hud {
+    margin-top: 6px;
+    padding-top: 4px;
+    min-height: 28px;
+    font-size: 10px;
+    color: rgba(200, 220, 255, 0.7);
+    white-space: normal;
+    -unity-text-align: middle-center;
 }
 
 .icon-placeholder {
