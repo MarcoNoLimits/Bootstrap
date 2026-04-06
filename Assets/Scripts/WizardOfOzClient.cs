@@ -47,7 +47,7 @@ public class WizardOfOzClient : MonoBehaviour
     [Tooltip("Minimum time between stall messages so they do not spam every stall interval.")]
     [SerializeField] private float stallMessageCooldownSeconds = 120f;
 
-    [Tooltip("If false, never show the stall hint (subtitle can stay on Listening indefinitely).")]
+    [Tooltip("If false, never show the stall hint. When true, deadline refreshes on each ASR HTTP round-trip so empty transcripts do not trigger a false stall.")]
     [SerializeField] private bool showListeningStallHint = true;
 
     private float _listeningStallDeadline = -1f;
@@ -94,7 +94,7 @@ public class WizardOfOzClient : MonoBehaviour
 
                 WireEvents();
                 _voice.Start();
-                SubscribeAsrDiagnostics();
+                SubscribeAsrStallReset();
                 
                 Debug.Log("[WizardOfOz] System READY.");
             } catch (Exception e) {
@@ -260,26 +260,27 @@ public class WizardOfOzClient : MonoBehaviour
         }
     }
 
-    private void SubscribeAsrDiagnostics()
+    /// <summary>Empty JSON text responses do not fire OnHypothesis; we still extend the stall deadline on each HTTP round-trip.</summary>
+    private void SubscribeAsrStallReset()
     {
         if (HololensAsrManager.Instance == null) return;
-        HololensAsrManager.Instance.OnStatusMessage -= OnAsrStatusForUi;
-        HololensAsrManager.Instance.OnStatusMessage += OnAsrStatusForUi;
+        HololensAsrManager.Instance.OnApiRequestFinished -= OnAsrHttpRoundTrip;
+        HololensAsrManager.Instance.OnApiRequestFinished += OnAsrHttpRoundTrip;
     }
 
-    private void OnAsrStatusForUi(string msg)
+    private void OnAsrHttpRoundTrip(bool success)
     {
         MainThreadDispatcher.RunOnMainThread(() =>
         {
-            if (_uiManager != null)
-                _uiManager.UpdateText(msg);
+            if (_listeningStallDeadline > 0f)
+                _listeningStallDeadline = Time.time + listeningStallSeconds;
         });
     }
 
     private void OnDestroy()
     {
         if (HololensAsrManager.Instance != null)
-            HololensAsrManager.Instance.OnStatusMessage -= OnAsrStatusForUi;
+            HololensAsrManager.Instance.OnApiRequestFinished -= OnAsrHttpRoundTrip;
         _voice?.Dispose();
         _uiRT?.Release();
     }

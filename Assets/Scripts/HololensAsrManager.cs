@@ -22,9 +22,6 @@ public class HololensAsrManager : MonoBehaviour
     public event Action OnMicrophoneNotReady;
     /// <summary>Fired once when <see cref="Microphone.IsRecording"/> becomes true and capture begins.</summary>
     public event Action OnMicrophoneReady;
-    /// <summary>Short status for on-screen debugging (HoloLens has no Unity Console).</summary>
-    public event Action<string> OnStatusMessage;
-
     [Header("ASR API")]
     [Tooltip("Transcribe URL: POST raw float32 PCM mono (little-endian), Content-Type application/octet-stream, header X-Sample-Rate matching _sampleRate (e.g. 16000). Response JSON { \"text\": \"...\" }.")]
     [SerializeField] private string _asrApiUrl = "https://thedeezat-asr-hearing-impaired-api.hf.space/audio";
@@ -46,7 +43,6 @@ public class HololensAsrManager : MonoBehaviour
     private bool _loggedResample;
     private float _lastEmptyTranscriptLogTime = -999f;
     private static string _logFilePath;
-    private bool _postedFirstChunkToUi;
 
     private void Awake()
     {
@@ -73,14 +69,12 @@ public class HololensAsrManager : MonoBehaviour
         }
     }
 
-    /// <param name="alsoSubtitle">Use for one-line hints on device (Unity Console is often unavailable).</param>
-    private void EmitStatus(string line, bool alsoSubtitle = false)
+    /// <summary>Logs to Unity + asr_debug.log only (never drives HoloLens subtitle).</summary>
+    private void EmitStatus(string line)
     {
         string full = "[ASR] " + line;
         Debug.Log(full);
         AsrFileLog(full);
-        if (alsoSubtitle)
-            OnStatusMessage?.Invoke(line);
     }
 
     /// <summary>Optional GET /health per API doc (same host as POST /audio).</summary>
@@ -100,7 +94,7 @@ public class HololensAsrManager : MonoBehaviour
         if (string.IsNullOrEmpty(healthUrl))
             yield break;
 
-        EmitStatus("GET " + healthUrl, true);
+        EmitStatus("GET " + healthUrl);
         using (UnityWebRequest req = UnityWebRequest.Get(healthUrl))
         {
             req.timeout = 25;
@@ -108,13 +102,13 @@ public class HololensAsrManager : MonoBehaviour
             yield return req.SendWebRequest();
             if (req.result != UnityWebRequest.Result.Success)
             {
-                EmitStatus("/health failed: " + req.error + " code=" + req.responseCode, true);
+                EmitStatus("/health failed: " + req.error + " code=" + req.responseCode);
             }
             else
             {
                 string body = req.downloadHandler?.text ?? "";
                 string shortBody = body.Length > 140 ? body.Substring(0, 140) + "…" : body;
-                EmitStatus("/health OK: " + shortBody, true);
+                EmitStatus("/health OK: " + shortBody);
             }
         }
     }
@@ -139,7 +133,7 @@ public class HololensAsrManager : MonoBehaviour
         {
             if (string.IsNullOrEmpty(_logFilePath))
                 _logFilePath = Path.Combine(Application.persistentDataPath, "asr_debug.log");
-            EmitStatus("No microphone devices. Log: " + _logFilePath, true);
+            EmitStatus("No microphone devices. Log: " + _logFilePath);
             Debug.LogError("[ASR] No microphone device available.");
             OnMicrophoneNotReady?.Invoke();
             return;
@@ -148,16 +142,15 @@ public class HololensAsrManager : MonoBehaviour
         _micDevice = Microphone.devices[0];
         _chunksUploaded = 0;
         _loggedFirstChunk = false;
-        _postedFirstChunkToUi = false;
         if (string.IsNullOrEmpty(_logFilePath))
             _logFilePath = Path.Combine(Application.persistentDataPath, "asr_debug.log");
-        EmitStatus("Full log (always written): " + _logFilePath, true);
+        EmitStatus("Full log (always written): " + _logFilePath);
 
-        EmitStatus($"Microphone.Start device='{_micDevice}' requestHz={_sampleRate} clipLen={_clipLengthSeconds}s", false);
+        EmitStatus($"Microphone.Start device='{_micDevice}' requestHz={_sampleRate} clipLen={_clipLengthSeconds}s");
         _micClip = Microphone.Start(_micDevice, true, _clipLengthSeconds, _sampleRate);
         if (_micClip == null)
         {
-            EmitStatus("Microphone.Start returned null — enable Microphone capability + OS privacy.", true);
+            EmitStatus("Microphone.Start returned null — enable Microphone capability + OS privacy.");
             Debug.LogError("[ASR] Microphone.Start returned null — check UWP Microphone capability and privacy settings.");
             OnMicrophoneNotReady?.Invoke();
             return;
@@ -172,7 +165,7 @@ public class HololensAsrManager : MonoBehaviour
 
         if (_captureCoroutine != null) StopCoroutine(_captureCoroutine);
         _captureCoroutine = StartCoroutine(CaptureAndUploadLoop());
-        EmitStatus("Capture waiting for IsRecording…", false);
+        EmitStatus("Capture waiting for IsRecording…");
     }
 
     public void StopAsr()
@@ -198,7 +191,7 @@ public class HololensAsrManager : MonoBehaviour
         _pendingFloat32Bytes = null;
         CurrentMicLevel = 0f;
         OnMicLevelUpdated?.Invoke(CurrentMicLevel);
-        EmitStatus("Microphone capture stopped.", false);
+        EmitStatus("Microphone capture stopped.");
     }
 
     private IEnumerator CaptureAndUploadLoop()
@@ -210,8 +203,7 @@ public class HololensAsrManager : MonoBehaviour
             if (Time.realtimeSinceStartup - waitMic > 8f)
             {
                 EmitStatus(
-                    "Timeout: mic not recording in 8s. Privacy→Microphone. See " + _logFilePath,
-                    true);
+                    "Timeout: mic not recording in 8s. Privacy→Microphone. See " + _logFilePath);
                 Debug.LogError(
                     "[ASR] Timeout: Microphone never entered recording state (8s). Device='" + _micDevice + "'.");
                 IsRunning = false;
@@ -233,7 +225,7 @@ public class HololensAsrManager : MonoBehaviour
         }
 
         int clipHz = _micClip.frequency > 0 ? _micClip.frequency : _sampleRate;
-        EmitStatus($"Mic recording OK. clipHz={clipHz} → API float32 @{_sampleRate}Hz (matches X-Sample-Rate).", true);
+        EmitStatus($"Mic recording OK. clipHz={clipHz} → API float32 @{_sampleRate}Hz (matches X-Sample-Rate).");
         OnMicrophoneReady?.Invoke();
 
         while (IsRunning)
@@ -319,7 +311,7 @@ public class HololensAsrManager : MonoBehaviour
         {
             _loggedFirstChunk = true;
             int samples = float32Bytes.Length / 4;
-            EmitStatus($"POST /audio first chunk: {float32Bytes.Length} bytes ({samples} float32 LE mono)", true);
+            EmitStatus($"POST /audio first chunk: {float32Bytes.Length} bytes ({samples} float32 LE mono)");
         }
 
         if (_requestInFlight)
@@ -414,7 +406,7 @@ public class HololensAsrManager : MonoBehaviour
 
         if (float32Bytes.Length % 4 != 0)
         {
-            EmitStatus("Invalid body: length not multiple of 4 (float32).", true);
+            EmitStatus("Invalid body: length not multiple of 4 (float32).");
             OnApiRequestFinished?.Invoke(false);
             _requestInFlight = false;
             yield break;
@@ -434,9 +426,9 @@ public class HololensAsrManager : MonoBehaviour
             {
                 string errBody = req.downloadHandler?.text ?? "";
                 if (req.responseCode == 400 && !string.IsNullOrEmpty(errBody))
-                    EmitStatus("HTTP 400: " + (errBody.Length > 200 ? errBody.Substring(0, 200) + "…" : errBody), true);
+                    EmitStatus("HTTP 400: " + (errBody.Length > 200 ? errBody.Substring(0, 200) + "…" : errBody));
                 else
-                    EmitStatus("POST /audio failed: " + req.error + " HTTP " + req.responseCode, true);
+                    EmitStatus("POST /audio failed: " + req.error + " HTTP " + req.responseCode);
                 Debug.LogWarning("[ASR] API HTTP failed: " + req.error + " code=" + req.responseCode);
                 OnApiRequestFinished?.Invoke(false);
             }
@@ -447,7 +439,7 @@ public class HololensAsrManager : MonoBehaviour
                 if (_chunksUploaded <= 3 || _chunksUploaded % 20 == 0)
                 {
                     string preview = rawBody.Length > 160 ? rawBody.Substring(0, 160) + "…" : rawBody;
-                    EmitStatus($"HTTP 200 chunk #{_chunksUploaded} resp: {preview}", false);
+                    EmitStatus($"HTTP 200 chunk #{_chunksUploaded} resp: {preview}");
                 }
 
                 string text = ExtractText(rawBody);
@@ -474,15 +466,10 @@ public class HololensAsrManager : MonoBehaviour
                         _latestText.Length = 0;
                         _latestText.Append(next);
                         OnTextUpdated?.Invoke(_latestText.ToString());
-                        if (!_postedFirstChunkToUi)
-                        {
-                            _postedFirstChunkToUi = true;
-                            EmitStatus("Transcript: " + (next.Length > 80 ? next.Substring(0, 80) + "…" : next), true);
-                        }
                     }
                     else
                     {
-                        EmitStatus($"Filter skipped update (prev={prev.Length} next={next.Length}).", false);
+                        EmitStatus($"Filter skipped update (prev={prev.Length} next={next.Length}).");
                     }
 
                     OnApiRequestFinished?.Invoke(true);
