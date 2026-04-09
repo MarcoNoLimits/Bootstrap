@@ -3,6 +3,14 @@
   "WorkspaceRootPath": "C:\\GitHub\\Bootstrap\\",
   "Documents": [
     {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\GitHub\\Bootstrap\\Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\FeaturePlugins\\AppRemotingPlugin.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\FeaturePlugins\\AppRemotingPlugin.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\GitHub\\Bootstrap\\Assets\\Scripts\\HololensAsrManager.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Assets\\Scripts\\HololensAsrManager.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
       "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\GitHub\\Bootstrap\\Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
@@ -35,8 +43,21 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 3,
+          "SelectedChildIndex": 0,
           "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "AppRemotingPlugin.cs",
+              "DocumentMoniker": "C:\\GitHub\\Bootstrap\\Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\FeaturePlugins\\AppRemotingPlugin.cs",
+              "RelativeDocumentMoniker": "Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\FeaturePlugins\\AppRemotingPlugin.cs",
+              "ToolTip": "C:\\GitHub\\Bootstrap\\Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\FeaturePlugins\\AppRemotingPlugin.cs",
+              "RelativeToolTip": "Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\FeaturePlugins\\AppRemotingPlugin.cs",
+              "ViewState": "AgIAAEAAAAAAAAAAAAD4v00AAABYAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-09T14:52:53.897Z",
+              "EditorCaption": ""
+            },
             {
               "$type": "Bookmark",
               "Name": "ST:0:0:{269a02dc-6af8-11d3-bdc4-00c04f688e50}"
@@ -51,7 +72,20 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 0,
+              "DocumentIndex": 1,
+              "Title": "HololensAsrManager.cs",
+              "DocumentMoniker": "C:\\GitHub\\Bootstrap\\Assets\\Scripts\\HololensAsrManager.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\HololensAsrManager.cs",
+              "ToolTip": "C:\\GitHub\\Bootstrap\\Assets\\Scripts\\HololensAsrManager.cs",
+              "RelativeToolTip": "Assets\\Scripts\\HololensAsrManager.cs",
+              "ViewState": "AgIAADcBAAAAAAAAAAD4v0QBAABoAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-06T14:59:57.157Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
               "Title": "AppRemotingSubsystem.cs",
               "DocumentMoniker": "C:\\GitHub\\Bootstrap\\Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs",
               "RelativeDocumentMoniker": "Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs",
@@ -59,12 +93,11 @@
               "RelativeToolTip": "Library\\PackageCache\\com.microsoft.mixedreality.openxr@42041f7dc068\\Runtime\\Subsystems\\AppRemotingSubsystem.cs",
               "ViewState": "AgIAAMQAAAAAAAAAAAD4v9EAAAB8AAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-04-06T14:06:52.326Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-04-06T14:06:52.326Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 2,
+              "DocumentIndex": 4,
               "Title": "WizardOfOzClient.cs",
               "DocumentMoniker": "C:\\GitHub\\Bootstrap\\Assets\\Scripts\\WizardOfOzClient.cs",
               "RelativeDocumentMoniker": "Assets\\Scripts\\WizardOfOzClient.cs",
@@ -76,7 +109,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 3,
+              "DocumentIndex": 5,
               "Title": "EventSystem.cs",
               "DocumentMoniker": "C:\\GitHub\\Bootstrap\\Library\\PackageCache\\com.unity.ugui@1.0.0\\Runtime\\EventSystem\\EventSystem.cs",
               "RelativeDocumentMoniker": "Library\\PackageCache\\com.unity.ugui@1.0.0\\Runtime\\EventSystem\\EventSystem.cs",
@@ -88,7 +121,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 4,
+              "DocumentIndex": 6,
               "Title": "AppBootstrap.cs",
               "DocumentMoniker": "C:\\Users\\ahmed\\Bootstrap\\Assets\\AppBootstrap.cs",
               "RelativeDocumentMoniker": "..\\..\\Users\\ahmed\\Bootstrap\\Assets\\AppBootstrap.cs",
@@ -100,7 +133,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 5,
+              "DocumentIndex": 7,
               "Title": "AppBootstrap.cs",
               "DocumentMoniker": "C:\\Users\\ahmed\\Bootstrap\\Assets\\Scripts\\AppBootstrap.cs",
               "RelativeDocumentMoniker": "..\\..\\Users\\ahmed\\Bootstrap\\Assets\\Scripts\\AppBootstrap.cs",
@@ -112,7 +145,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 6,
+              "DocumentIndex": 8,
               "Title": "Styles.uss",
               "DocumentMoniker": "C:\\Users\\ahmed\\Bootstrap\\Assets\\ResourcesUI\\Styles.uss",
               "RelativeDocumentMoniker": "..\\..\\Users\\ahmed\\Bootstrap\\Assets\\ResourcesUI\\Styles.uss",
@@ -123,7 +156,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 3,
               "Title": "App.cs",
               "DocumentMoniker": "C:\\GitHub\\Bootstrap\\Assets\\Scripts\\App.cs",
               "RelativeDocumentMoniker": "Assets\\Scripts\\App.cs",

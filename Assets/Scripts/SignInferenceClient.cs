@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.UI;
@@ -24,11 +25,14 @@ public class InferResponse
 /// - Parses JSON and updates UI with debounce/confidence threshold
 /// - Exposes optional spell endpoint methods for UI buttons
 /// </summary>
+[DefaultExecutionOrder(-40)]
 public class SignInferenceClient : MonoBehaviour
 {
+    private const string WorkingStatusText = "Sign language mode is active and working.";
+
     [Header("API")]
-    [Tooltip("Use LAN IP for HoloLens tests, e.g. http://192.168.1.20:8000")]
-    [SerializeField] private string baseUrl = "http://192.168.1.20:8000";
+    [Tooltip("Use LAN IP for HoloLens tests, e.g. http://172.16.23.67:8010 (or localhost on same machine).")]
+    [SerializeField] private string baseUrl = "http://172.16.23.67:8010";
     [SerializeField] private bool spell = true;
     [SerializeField] private string sessionId = "";
     [SerializeField] private float requestTimeoutSeconds = 4f;
@@ -36,6 +40,10 @@ public class SignInferenceClient : MonoBehaviour
     [Header("Capture")]
     [Tooltip("If enabled and available, uses WebCamTexture (PV camera) as source.")]
     [SerializeField] private bool useWebCamTexture = true;
+    [Tooltip("If true, only allow WebCamTexture capture on HoloLens device builds (never desktop editor/webcam).")]
+    [SerializeField] private bool hololensCameraOnly = true;
+    [Tooltip("Editor-only debug: allow desktop webcam in Unity Editor while keeping device builds HoloLens-focused.")]
+    [SerializeField] private bool allowEditorDesktopCamera = true;
     [Tooltip("Optional texture source if not using WebCamTexture (e.g. RenderTexture converted elsewhere).")]
     [SerializeField] private Texture overrideSource;
     [SerializeField] private int targetSize = 224;
@@ -45,6 +53,8 @@ public class SignInferenceClient : MonoBehaviour
     [Header("Rate control")]
     [Tooltip("Inference requests per second, independent from camera FPS.")]
     [SerializeField] private float requestFps = 8f;
+    [Tooltip("When enabled, sends the first inference request as soon as startup capture is ready.")]
+    [SerializeField] private bool startCapturingOnLaunch = true;
     [Tooltip("Skip frame while one request is running.")]
     [SerializeField] private bool dropIfRequestInFlight = true;
     [Tooltip("Only attempt inference every Nth update tick (1 = every tick).")]
@@ -73,6 +83,12 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private float uiDebounceSeconds = 0.12f;
     [SerializeField] private bool useServerTextAsAuthoritative = true;
 
+    [Header("Debug")]
+    [Tooltip("If enabled, saves occasional captured ROI JPGs to persistentDataPath/sign_debug.")]
+    [SerializeField] private bool saveDebugFrames = false;
+    [Tooltip("Save one debug frame every N send attempts.")]
+    [SerializeField] private int saveEveryNSends = 20;
+
     private WebCamTexture _webCamTexture;
     private Texture2D _workingFrame;
     private Texture2D _roiTexture;
@@ -84,9 +100,34 @@ public class SignInferenceClient : MonoBehaviour
     private string _lastServerText;
     private Color32[] _lastRoiSample;
     private int _frameTickCounter;
+    private bool _hasShownWorkingStatus;
+    private bool _loggedFirstRequest;
+    private bool _loggedFirstSuccess;
+    private int _captureFrameCount;
+    private int _sendAttemptCount;
+    private int _sendSuccessCount;
+    private string _lastSendState = "Idle";
+    private float _lastSendAt = -1f;
+    private string _debugFrameDir;
+    private string _lastRenderedStatus;
+    private float _nextStatusLogAt;
 
     public event Action<InferResponse> OnInferResponse;
     public event Action<string> OnNetworkError;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    private static void AutoStart()
+    {
+        if (FindObjectOfType<SignInferenceClient>() != null)
+        {
+            return;
+        }
+
+        var go = new GameObject("SIGN_INFERENCE_CLIENT");
+        go.AddComponent<SignInferenceClient>();
+        DontDestroyOnLoad(go);
+        Debug.Log("[SignInferenceClient] Auto-started.");
+    }
 
     private void Awake()
     {
@@ -102,8 +143,10 @@ public class SignInferenceClient : MonoBehaviour
         requestTimeoutSeconds = Mathf.Max(1f, requestTimeoutSeconds);
         centerCropScale = Mathf.Clamp(centerCropScale, 0.25f, 1f);
         similaritySampleSize = Mathf.Clamp(similaritySampleSize, 8, 32);
+        saveEveryNSends = Mathf.Max(1, saveEveryNSends);
 
         _roiTexture = new Texture2D(targetSize, targetSize, TextureFormat.RGB24, false);
+        _debugFrameDir = Path.Combine(Application.persistentDataPath, "sign_debug");
     }
 
     private void Start()
@@ -112,10 +155,17 @@ public class SignInferenceClient : MonoBehaviour
         {
             StartWebCam();
         }
+
+        if (startCapturingOnLaunch)
+        {
+            StartCoroutine(BeginCaptureOnLaunch());
+        }
     }
 
     private void Update()
     {
+        UpdateStatusHint();
+
         if (Time.time >= _nextUiApplyAt && !string.IsNullOrEmpty(_pendingLetter))
         {
             if (_pendingLetter != _lastAppliedLetter)
@@ -154,12 +204,14 @@ public class SignInferenceClient : MonoBehaviour
             return;
         }
 
+        _captureFrameCount++;
+
         if (!TryBuildJpegCrop(src, out byte[] jpegBytes))
         {
             return;
         }
 
-        StartCoroutine(PostInfer(jpegBytes));
+        QueueInference(jpegBytes, "loop");
     }
 
     private void OnDestroy()
@@ -190,6 +242,12 @@ public class SignInferenceClient : MonoBehaviour
 
     private void StartWebCam()
     {
+        if (hololensCameraOnly && !IsCameraAllowedForCurrentRuntime())
+        {
+            Debug.LogWarning("[SignInferenceClient] Camera OFF: HoloLens-only camera mode is enabled. Skipping desktop webcam.");
+            return;
+        }
+
         if (WebCamTexture.devices.Length == 0)
         {
             Debug.LogWarning("[SignInferenceClient] No camera devices found. Set overrideSource.");
@@ -197,8 +255,89 @@ public class SignInferenceClient : MonoBehaviour
         }
 
         string dev = WebCamTexture.devices[0].name;
+        Debug.Log("[SignInferenceClient] Camera ON: Starting WebCamTexture device: " + dev);
         _webCamTexture = new WebCamTexture(dev, 896, 504, 30);
         _webCamTexture.Play();
+    }
+
+    private bool IsCameraAllowedForCurrentRuntime()
+    {
+        if (IsRunningOnHoloLens()) return true;
+#if UNITY_EDITOR
+        return allowEditorDesktopCamera;
+#else
+        return false;
+#endif
+    }
+
+    private static bool IsRunningOnHoloLens()
+    {
+#if UNITY_WSA && !UNITY_EDITOR
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    private IEnumerator BeginCaptureOnLaunch()
+    {
+        if (useWebCamTexture && hololensCameraOnly && !IsCameraAllowedForCurrentRuntime() && overrideSource == null)
+        {
+            Debug.LogWarning("[SignInferenceClient] Waiting for HoloLens PV camera. Run this on-device to start sign capture.");
+            yield break;
+        }
+
+        if (useWebCamTexture)
+        {
+            float deadline = Time.time + 3f;
+            while ((_webCamTexture == null || !_webCamTexture.isPlaying || _webCamTexture.width <= 16) && Time.time < deadline)
+            {
+                yield return null;
+            }
+
+            if (_webCamTexture == null || !_webCamTexture.isPlaying || _webCamTexture.width <= 16)
+            {
+                Debug.LogWarning("[SignInferenceClient] Startup capture wait timed out. Camera not ready yet.");
+            }
+        }
+        else
+        {
+            yield return null;
+        }
+
+        _nextRequestAt = 0f;
+        _frameTickCounter = Mathf.Max(0, sendEveryNthFrame - 1);
+        TryQueueInferenceNow();
+    }
+
+    private void TryQueueInferenceNow()
+    {
+        if (_requestInFlight && dropIfRequestInFlight)
+        {
+            return;
+        }
+
+        Texture src = GetActiveSourceTexture();
+        if (src == null)
+        {
+            return;
+        }
+
+        if (!TryBuildJpegCrop(src, out byte[] jpegBytes))
+        {
+            return;
+        }
+
+        QueueInference(jpegBytes, "launch");
+    }
+
+    private void QueueInference(byte[] jpegBytes, string tag)
+    {
+        _sendAttemptCount++;
+        _lastSendState = "Sending";
+        _lastSendAt = Time.time;
+        MaybeSaveDebugFrame(jpegBytes, tag);
+        StartCoroutine(PostInfer(jpegBytes));
     }
 
     private Texture GetActiveSourceTexture()
@@ -387,6 +526,11 @@ public class SignInferenceClient : MonoBehaviour
         _requestInFlight = true;
 
         string url = TrimTrailingSlash(baseUrl) + "/infer";
+        if (!_loggedFirstRequest)
+        {
+            _loggedFirstRequest = true;
+            Debug.Log("[SignInferenceClient] Sending first inference request to " + url);
+        }
         List<IMultipartFormSection> form = new List<IMultipartFormSection>
         {
             new MultipartFormFileSection("image", jpegBytes, "frame.jpg", "image/jpeg")
@@ -407,16 +551,36 @@ public class SignInferenceClient : MonoBehaviour
         using (UnityWebRequest req = UnityWebRequest.Post(url, form))
         {
             req.timeout = Mathf.RoundToInt(requestTimeoutSeconds);
-            yield return req.SendWebRequest();
+            UnityWebRequestAsyncOperation op = null;
+            try
+            {
+                op = req.SendWebRequest();
+            }
+            catch (InvalidOperationException ex)
+            {
+                _lastSendState = "HTTP blocked";
+                string err =
+                    "HTTP blocked by Unity Player setting. Set Player > Other Settings > Allow downloads over HTTP = Always allowed. " +
+                    ex.Message;
+                Debug.LogError("[SignInferenceClient] " + err);
+                OnNetworkError?.Invoke(err);
+                _requestInFlight = false;
+                yield break;
+            }
+
+            yield return op;
 
             if (req.result != UnityWebRequest.Result.Success)
             {
                 string err = $"infer failed: {req.error}";
                 Debug.LogWarning("[SignInferenceClient] " + err);
+                _lastSendState = "Send failed";
                 OnNetworkError?.Invoke(err);
             }
             else
             {
+                _sendSuccessCount++;
+                _lastSendState = "Send ok";
                 string json = req.downloadHandler.text;
                 InferResponse response = null;
                 try
@@ -425,11 +589,17 @@ public class SignInferenceClient : MonoBehaviour
                 }
                 catch (Exception e)
                 {
+                    _lastSendState = "Bad JSON";
                     OnNetworkError?.Invoke("json parse failed: " + e.Message);
                 }
 
                 if (response != null)
                 {
+                    if (!_loggedFirstSuccess)
+                    {
+                        _loggedFirstSuccess = true;
+                        Debug.Log("[SignInferenceClient] First inference response received.");
+                    }
                     HandleInferResponse(response);
                     OnInferResponse?.Invoke(response);
                 }
@@ -441,6 +611,12 @@ public class SignInferenceClient : MonoBehaviour
 
     private void HandleInferResponse(InferResponse response)
     {
+        if (!_hasShownWorkingStatus && statusHintText != null)
+        {
+            statusHintText.text = WorkingStatusText;
+            _hasShownWorkingStatus = true;
+        }
+
         if (response.confidence >= confidenceThreshold && !string.IsNullOrEmpty(response.letter))
         {
             _pendingLetter = response.letter;
@@ -462,6 +638,72 @@ public class SignInferenceClient : MonoBehaviour
         if (statusHintText != null && !string.IsNullOrEmpty(response.status_hint))
         {
             statusHintText.text = response.status_hint;
+        }
+    }
+
+    private void UpdateStatusHint()
+    {
+        string source;
+        if (overrideSource != null)
+        {
+            source = "Override";
+        }
+        else if (_webCamTexture != null && _webCamTexture.isPlaying && _webCamTexture.width > 16)
+        {
+            source = "HoloLensCam";
+        }
+        else
+        {
+            source = "NoCamera";
+        }
+
+        string lastAgo = _lastSendAt < 0f
+            ? "-"
+            : TimeSpan.FromSeconds(Mathf.Max(0f, Time.time - _lastSendAt)).ToString(@"ss\.f") + "s ago";
+
+        string statusLine =
+            $"Source:{source} Captured:{_captureFrameCount} Sent:{_sendAttemptCount}/{_sendSuccessCount} Last:{_lastSendState} ({lastAgo})";
+
+        SetStatusText(statusLine);
+    }
+
+    private void SetStatusText(string statusLine)
+    {
+        Text target = statusHintText != null ? statusHintText : (serverText != null ? serverText : letterText);
+        if (target != null)
+        {
+            target.text = statusLine;
+            _lastRenderedStatus = statusLine;
+            return;
+        }
+
+        if (_lastRenderedStatus != statusLine || Time.time >= _nextStatusLogAt)
+        {
+            Debug.Log("[SignInferenceClient] " + statusLine + " (Assign statusHintText/serverText/letterText to show on-screen)");
+            _lastRenderedStatus = statusLine;
+            _nextStatusLogAt = Time.time + 2f;
+        }
+    }
+
+    private void MaybeSaveDebugFrame(byte[] jpegBytes, string tag)
+    {
+        if (!saveDebugFrames || jpegBytes == null || jpegBytes.Length == 0) return;
+        if ((_sendAttemptCount % saveEveryNSends) != 0) return;
+
+        try
+        {
+            if (!Directory.Exists(_debugFrameDir))
+            {
+                Directory.CreateDirectory(_debugFrameDir);
+            }
+
+            string path = Path.Combine(_debugFrameDir, $"frame_{DateTime.Now:yyyyMMdd_HHmmss_fff}_{tag}.jpg");
+            File.WriteAllBytes(path, jpegBytes);
+            Debug.Log("[SignInferenceClient] Saved debug frame: " + path);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[SignInferenceClient] Could not save debug frame: " + e.Message);
         }
     }
 

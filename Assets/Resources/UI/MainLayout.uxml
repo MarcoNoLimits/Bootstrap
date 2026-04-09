@@ -6,7 +6,7 @@
             <!-- Vertical action rail: audio toggle, SLR capture, settings (handlers wired later) -->
             <ui:VisualElement class="action-rail" name="action-rail">
                 <ui:Button name="btn-audio-toggle" text="Audio · Off" class="action-rail-btn" tooltip="Start or stop microphone capture (placeholder)" />
-                <ui:Button name="btn-slr-capture" text="SLR" class="action-rail-btn" tooltip="Capture image from SLR (placeholder)" />
+                <ui:Button name="btn-slr-capture" text="Sign Language" class="action-rail-btn" tooltip="Sign language mode is active" />
                 <ui:Button name="btn-settings-rail" text="Settings" class="action-rail-btn action-rail-btn-outline action-rail-btn-last" tooltip="Open settings (placeholder)" />
                 <ui:Label name="xr-debug-hud" class="xr-debug-hud" text="" />
             </ui:VisualElement>

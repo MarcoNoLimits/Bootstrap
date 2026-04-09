@@ -133,7 +133,7 @@ public class HololensViewStreamer : MonoBehaviour
   <div class=""container"">
     <header>
       <h1>HoloLens Live View</h1>
-      <span class=""badge"">ASR</span>
+      <span class=""badge"">Sign Language</span>
     </header>
     <div class=""viewer"">
       <img id=""feed"" alt=""Live feed"" crossorigin=""anonymous"">
@@ -155,7 +155,7 @@ public class HololensViewStreamer : MonoBehaviour
       }
       img.onload = function() {
         placeholder.classList.add('hidden');
-        status.textContent = 'Live';
+        status.textContent = 'Sign language stream is working';
         status.classList.add('live');
         status.classList.remove('error');
         failed = 0;
