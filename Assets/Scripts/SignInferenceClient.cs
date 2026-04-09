@@ -5,6 +5,7 @@ using System.IO;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.UI;
+using UnityEngine.UIElements;
 
 [Serializable]
 public class InferResponse
@@ -51,6 +52,8 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField, Range(0.25f, 1f)] private float centerCropScale = 0.65f;
 
     [Header("Rate control")]
+    [Tooltip("If false, sign capture stays idle until enabled from UI/code.")]
+    [SerializeField] private bool signCaptureActive = false;
     [Tooltip("Inference requests per second, independent from camera FPS.")]
     [SerializeField] private float requestFps = 8f;
     [Tooltip("When enabled, sends the first inference request as soon as startup capture is ready.")]
@@ -79,6 +82,8 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private Text letterText;
     [SerializeField] private Text serverText;
     [SerializeField] private Text statusHintText;
+    [Tooltip("If no legacy Text is assigned, write status to UI Toolkit label 'subtitle-text'.")]
+    [SerializeField] private bool useSubtitleLabelFallback = true;
     [SerializeField] private float confidenceThreshold = 0.5f;
     [SerializeField] private float uiDebounceSeconds = 0.12f;
     [SerializeField] private bool useServerTextAsAuthoritative = true;
@@ -111,6 +116,7 @@ public class SignInferenceClient : MonoBehaviour
     private string _debugFrameDir;
     private string _lastRenderedStatus;
     private float _nextStatusLogAt;
+    private Label _subtitleLabel;
 
     public event Action<InferResponse> OnInferResponse;
     public event Action<string> OnNetworkError;
@@ -151,12 +157,17 @@ public class SignInferenceClient : MonoBehaviour
 
     private void Start()
     {
-        if (useWebCamTexture)
+        if (useSubtitleLabelFallback)
+        {
+            StartCoroutine(BindSubtitleLabelWhenReady());
+        }
+
+        if (signCaptureActive && useWebCamTexture)
         {
             StartWebCam();
         }
 
-        if (startCapturingOnLaunch)
+        if (signCaptureActive && startCapturingOnLaunch)
         {
             StartCoroutine(BeginCaptureOnLaunch());
         }
@@ -164,6 +175,12 @@ public class SignInferenceClient : MonoBehaviour
 
     private void Update()
     {
+        if (!signCaptureActive)
+        {
+            UpdateIdleStatusHint();
+            return;
+        }
+
         UpdateStatusHint();
 
         if (Time.time >= _nextUiApplyAt && !string.IsNullOrEmpty(_pendingLetter))
@@ -214,18 +231,34 @@ public class SignInferenceClient : MonoBehaviour
         QueueInference(jpegBytes, "loop");
     }
 
+    public void SetSignCaptureActive(bool active)
+    {
+        if (signCaptureActive == active) return;
+        signCaptureActive = active;
+
+        if (signCaptureActive)
+        {
+            if (useWebCamTexture)
+            {
+                StartWebCam();
+            }
+            if (startCapturingOnLaunch)
+            {
+                StartCoroutine(BeginCaptureOnLaunch());
+            }
+        }
+        else
+        {
+            StopCameraCapture();
+            _requestInFlight = false;
+            _lastSendState = "Idle";
+            UpdateIdleStatusHint();
+        }
+    }
+
     private void OnDestroy()
     {
-        if (_webCamTexture != null)
-        {
-            if (_webCamTexture.isPlaying)
-            {
-                _webCamTexture.Stop();
-            }
-
-            Destroy(_webCamTexture);
-            _webCamTexture = null;
-        }
+        StopCameraCapture();
 
         if (_workingFrame != null)
         {
@@ -258,6 +291,21 @@ public class SignInferenceClient : MonoBehaviour
         Debug.Log("[SignInferenceClient] Camera ON: Starting WebCamTexture device: " + dev);
         _webCamTexture = new WebCamTexture(dev, 896, 504, 30);
         _webCamTexture.Play();
+    }
+
+    private void StopCameraCapture()
+    {
+        if (_webCamTexture == null) return;
+        try
+        {
+            if (_webCamTexture.isPlaying)
+            {
+                _webCamTexture.Stop();
+            }
+        }
+        catch { }
+        Destroy(_webCamTexture);
+        _webCamTexture = null;
     }
 
     private bool IsCameraAllowedForCurrentRuntime()
@@ -650,7 +698,7 @@ public class SignInferenceClient : MonoBehaviour
         }
         else if (_webCamTexture != null && _webCamTexture.isPlaying && _webCamTexture.width > 16)
         {
-            source = "HoloLensCam";
+            source = IsRunningOnHoloLens() ? "HoloLensCam" : "EditorCam";
         }
         else
         {
@@ -667,6 +715,11 @@ public class SignInferenceClient : MonoBehaviour
         SetStatusText(statusLine);
     }
 
+    private void UpdateIdleStatusHint()
+    {
+        // Keep idle state silent so it does not overwrite ASR/transcription captions.
+    }
+
     private void SetStatusText(string statusLine)
     {
         Text target = statusHintText != null ? statusHintText : (serverText != null ? serverText : letterText);
@@ -677,11 +730,40 @@ public class SignInferenceClient : MonoBehaviour
             return;
         }
 
+        if (_subtitleLabel != null)
+        {
+            _subtitleLabel.text = statusLine;
+            _lastRenderedStatus = statusLine;
+            return;
+        }
+
         if (_lastRenderedStatus != statusLine || Time.time >= _nextStatusLogAt)
         {
             Debug.Log("[SignInferenceClient] " + statusLine + " (Assign statusHintText/serverText/letterText to show on-screen)");
             _lastRenderedStatus = statusLine;
             _nextStatusLogAt = Time.time + 2f;
+        }
+    }
+
+    private IEnumerator BindSubtitleLabelWhenReady()
+    {
+        float deadline = Time.time + 8f;
+        while (_subtitleLabel == null && Time.time < deadline)
+        {
+            UIDocument[] docs = FindObjectsOfType<UIDocument>();
+            for (int i = 0; i < docs.Length; i++)
+            {
+                var root = docs[i] != null ? docs[i].rootVisualElement : null;
+                if (root == null) continue;
+                Label candidate = root.Q<Label>("subtitle-text");
+                if (candidate != null)
+                {
+                    _subtitleLabel = candidate;
+                    Debug.Log("[SignInferenceClient] Bound UI Toolkit subtitle-text label for sign status.");
+                    yield break;
+                }
+            }
+            yield return null;
         }
     }
 

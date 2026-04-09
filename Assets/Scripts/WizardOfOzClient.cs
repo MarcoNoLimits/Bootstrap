@@ -52,6 +52,7 @@ public class WizardOfOzClient : MonoBehaviour
 
     private float _listeningStallDeadline = -1f;
     private float _nextStallMessageAllowedTime;
+    private string _lastModeBanner = "";
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void AutoStart()
@@ -167,7 +168,7 @@ public class WizardOfOzClient : MonoBehaviour
         if (_mainCam != null)
         {
             Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.5f);
-            target += Vector3.down * 0.24f;
+            target += Vector3.down * 0.30f;
             _mainUIRoot.transform.position = target;
             _mainUIRoot.transform.LookAt(_mainCam.transform);
             _mainUIRoot.transform.Rotate(0, 180, 0);
@@ -188,11 +189,13 @@ public class WizardOfOzClient : MonoBehaviour
         if (_voice == null || _uiManager == null) return;
 
         _voice.OnListeningStarted += () => MainThreadDispatcher.RunOnMainThread(() => {
+            if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
             _uiManager.UpdateText("Listening...");
         });
 
         _voice.OnHypothesis += (partial) => MainThreadDispatcher.RunOnMainThread(() => {
+            if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
             if (!string.IsNullOrEmpty(partial)) {
                 _uiManager.UpdateText($"Listening… {partial}");
@@ -200,22 +203,28 @@ public class WizardOfOzClient : MonoBehaviour
         });
 
         _voice.OnSpeechBargeIn += () => MainThreadDispatcher.RunOnMainThread(() => {
+            if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
             _uiManager.UpdateText("Listening…");
         });
 
         _voice.OnSentenceCompleted += (text) => {
             MainThreadDispatcher.RunOnMainThread(() => {
+                if (App.CurrentInputMode != App.InputMode.Asr) return;
                 _listeningStallDeadline = -1f;
                 _nextStallMessageAllowedTime = 0f;
                 _uiManager.UpdateText($"Recognized: {text}");
             });
-            _network.SendTranslationRequest(text, (resp) => {
-                MainThreadDispatcher.RunOnMainThread(() => _uiManager.UpdateText(resp));
-            });
+            if (App.CurrentInputMode == App.InputMode.Asr && App.IsTranslationEnabled)
+            {
+                _network.SendTranslationRequest(text, (resp) => {
+                    MainThreadDispatcher.RunOnMainThread(() => _uiManager.UpdateText(resp));
+                });
+            }
         };
 
         _voice.OnError += (err) => MainThreadDispatcher.RunOnMainThread(() => {
+            if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = -1f;
             if (string.IsNullOrEmpty(err)) return;
             if (err.StartsWith(HybridVoiceManager.AsrFallbackUserMessage, StringComparison.Ordinal))
@@ -230,14 +239,39 @@ public class WizardOfOzClient : MonoBehaviour
         if (_mainUIRoot != null && _mainCam != null)
         {
             Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.5f);
-            target += Vector3.down * 0.24f;
+            target += Vector3.down * 0.30f;
             _mainUIRoot.transform.position = Vector3.Lerp(_mainUIRoot.transform.position, target, Time.deltaTime * 4.0f);
             _mainUIRoot.transform.LookAt(_mainCam.transform);
             _mainUIRoot.transform.Rotate(0, 180, 0);
         }
 
+        if (_uiManager != null)
+        {
+            if (App.CurrentInputMode == App.InputMode.Sign)
+            {
+                if (_lastModeBanner != "sign")
+                {
+                    _lastModeBanner = "sign";
+                    _uiManager.UpdateText("Getting sign...");
+                }
+            }
+            else if (App.CurrentInputMode == App.InputMode.None)
+            {
+                if (_lastModeBanner != "none")
+                {
+                    _lastModeBanner = "none";
+                    _uiManager.UpdateText("");
+                }
+            }
+            else
+            {
+                _lastModeBanner = "";
+            }
+        }
+
         // Do not show stall while an ASR HTTP request is still running (cold remote can take >60s; deadline only refreshes on response).
-        if (showListeningStallHint
+        if (App.CurrentInputMode == App.InputMode.Asr
+            && showListeningStallHint
             && _listeningStallDeadline > 0f
             && Time.time >= _listeningStallDeadline
             && _uiManager != null
@@ -305,17 +339,29 @@ public class UIManager
     public UIManager(UIDocument doc) {
         _label = doc.rootVisualElement.Q<Label>("subtitle-text");
         if (_label != null) {
-            _label.text = "READY: Speak Now";
+            _label.text = "";
+            _label.style.display = DisplayStyle.None;
         }
     }
-    public void UpdateText(string t) { if (_label != null) _label.text = t; }
+    public void UpdateText(string t)
+    {
+        if (_label == null) return;
+        bool hasText = !string.IsNullOrWhiteSpace(t);
+        _label.style.display = hasText ? DisplayStyle.Flex : DisplayStyle.None;
+        _label.text = hasText ? t : "";
+    }
 }
 
 public class NetworkManager
 {
     private string _ip; private int _p;
+    private DateTime _nextConnectionLogAllowedAt = DateTime.MinValue;
     public NetworkManager(string ip, int p) { _ip = ip; _p = p; }
     public async void SendTranslationRequest(string text, Action<string> cb) {
+        if (string.IsNullOrWhiteSpace(_ip) || _p <= 0) {
+            cb?.Invoke(text);
+            return;
+        }
         try {
             using (TcpClient c = new TcpClient()) {
                 await c.ConnectAsync(_ip, _p);
@@ -325,7 +371,13 @@ public class NetworkManager
                 int r = await c.GetStream().ReadAsync(b, 0, b.Length);
                 cb?.Invoke(Encoding.UTF8.GetString(b, 0, r));
             }
-        } catch (Exception e) { Debug.LogError(e.Message); cb?.Invoke("Net Error"); }
+        } catch (Exception e) {
+            if (DateTime.UtcNow >= _nextConnectionLogAllowedAt) {
+                Debug.LogWarning("[NetworkManager] Translation server unreachable at " + _ip + ":" + _p + ". Keeping ASR text. " + e.Message);
+                _nextConnectionLogAllowedAt = DateTime.UtcNow.AddSeconds(8);
+            }
+            cb?.Invoke(text);
+        }
     }
 }
 

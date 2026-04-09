@@ -7,6 +7,9 @@ using System.Collections.Generic;
 public class App : MonoBehaviour
 {
     private const string DefaultAsrText = "Live speech appears here. Toggle translation to view Italian text.";
+    public enum InputMode { None, Asr, Sign }
+    public static InputMode CurrentInputMode { get; private set; } = InputMode.None;
+    public static bool IsTranslationEnabled { get; private set; }
     private GameObject _mainUI;
     private Camera _mainCam;
     
@@ -14,18 +17,34 @@ public class App : MonoBehaviour
     [SerializeField] private float _distance = 1.5f;
     [SerializeField] private float _smoothSpeed = 4f;
     [Tooltip("Positive = right side of the view (camera +X).")]
-    [SerializeField] private float _rightOffsetMeters = 0.22f;
+    [SerializeField] private float _rightOffsetMeters = 0.34f;
     [Tooltip("Optional vertical nudge (camera +Y).")]
-    [SerializeField] private float _verticalOffsetMeters = 0f;
+    [SerializeField] private float _verticalOffsetMeters = -0.05f;
+    [Header("Scene Background")]
+    [SerializeField] private Color _sceneBackgroundColor = new Color(0.06f, 0.09f, 0.14f, 1f);
 
     // UI DIMENSIONS (must match USS .glass-panel-minimal)
-    private float _uiWidth = 180f;
-    private float _uiHeight = 400f;
+    private float _uiWidth = 260f;
+    private float _uiHeight = 440f;
     private float _scale = 0.001f;
 
     private bool _audioOn;
-    private Coroutine _slrFlashRoutine;
+    private bool _translationOn;
+    private bool _signOn;
     private Coroutine _settingsFlashRoutine;
+    private Button _translationToggleBtn;
+    private Button _asrToggleBtn;
+    private Button _signToggleBtn;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    private static void AutoStart()
+    {
+        if (FindObjectOfType<App>() != null) return;
+        var go = new GameObject("APP_UI_CLIENT");
+        go.AddComponent<App>();
+        DontDestroyOnLoad(go);
+        Debug.Log("[App] Auto-started MainLayout UI.");
+    }
 
     private void Awake()
     {
@@ -35,10 +54,14 @@ public class App : MonoBehaviour
     private void Start()
     {
         _mainCam = Camera.main;
+        CurrentInputMode = InputMode.None;
+        IsTranslationEnabled = false;
         
         // Initial jump to front (so you don't have to wait for it to fly in)
         if (_mainCam != null)
         {
+            _mainCam.clearFlags = CameraClearFlags.SolidColor;
+            _mainCam.backgroundColor = _sceneBackgroundColor;
             UpdatePosition(true); // true = instant snap
         }
     }
@@ -48,6 +71,11 @@ public class App : MonoBehaviour
         if (_mainCam == null)
         {
             _mainCam = Camera.main;
+            if (_mainCam != null)
+            {
+                _mainCam.clearFlags = CameraClearFlags.SolidColor;
+                _mainCam.backgroundColor = _sceneBackgroundColor;
+            }
             return;
         }
 
@@ -156,23 +184,78 @@ public class App : MonoBehaviour
 
         // 10. Pinch / click feedback (placeholder until wired to real audio / SLR / settings)
         var btnAudio = root.Q<Button>("btn-audio-toggle");
+        _asrToggleBtn = btnAudio;
         if (btnAudio != null)
         {
+            btnAudio.text = "Automatic Speech Recognition";
             btnAudio.clicked += () =>
             {
                 _audioOn = !_audioOn;
-                btnAudio.text = _audioOn ? "Audio · On" : "Audio · Off";
+                btnAudio.text = _audioOn ? "Automatic Speech Recognition · On" : "Automatic Speech Recognition";
                 btnAudio.EnableInClassList("action-rail-btn-on", _audioOn);
+                CurrentInputMode = _audioOn ? InputMode.Asr : (_signOn ? InputMode.Sign : InputMode.None);
+                IsTranslationEnabled = _audioOn && _translationOn;
+
+                if (_audioOn && _signOn)
+                {
+                    _signOn = false;
+                    var btnSign = root.Q<Button>("btn-slr-capture");
+                    if (btnSign != null)
+                    {
+                        btnSign.text = "Sign Language";
+                        btnSign.EnableInClassList("action-rail-btn-on", false);
+                    }
+                    var signClient = FindObjectOfType<SignInferenceClient>();
+                    if (signClient != null) signClient.SetSignCaptureActive(false);
+                }
+
+                if (_translationToggleBtn != null)
+                {
+                    _translationToggleBtn.style.display = _audioOn ? DisplayStyle.Flex : DisplayStyle.None;
+                    if (!_audioOn)
+                    {
+                        _translationOn = false;
+                        IsTranslationEnabled = false;
+                        _translationToggleBtn.text = "Translation · Off";
+                        _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                    }
+                }
             };
         }
 
         var btnSlr = root.Q<Button>("btn-slr-capture");
+        _signToggleBtn = btnSlr;
         if (btnSlr != null)
         {
+            btnSlr.text = "Sign Language";
             btnSlr.clicked += () =>
             {
-                if (_slrFlashRoutine != null) StopCoroutine(_slrFlashRoutine);
-                _slrFlashRoutine = StartCoroutine(FlashButtonLabel(btnSlr, "SLR", "Captured!", "action-rail-btn-flash", 0.75f));
+                _signOn = !_signOn;
+                btnSlr.text = _signOn ? "Sign Language · On" : "Sign Language";
+                btnSlr.EnableInClassList("action-rail-btn-on", _signOn);
+                CurrentInputMode = _signOn ? InputMode.Sign : (_audioOn ? InputMode.Asr : InputMode.None);
+                if (_signOn) IsTranslationEnabled = false;
+
+                if (_signOn && _audioOn)
+                {
+                    _audioOn = false;
+                    btnAudio.text = "Automatic Speech Recognition";
+                    btnAudio.EnableInClassList("action-rail-btn-on", false);
+                    if (_translationToggleBtn != null)
+                    {
+                        _translationOn = false;
+                        IsTranslationEnabled = false;
+                        _translationToggleBtn.text = "Translation · Off";
+                        _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                        _translationToggleBtn.style.display = DisplayStyle.None;
+                    }
+                }
+
+                var signClient = FindObjectOfType<SignInferenceClient>();
+                if (signClient != null)
+                {
+                    signClient.SetSignCaptureActive(_signOn);
+                }
             };
         }
 
@@ -186,6 +269,20 @@ public class App : MonoBehaviour
             };
         }
 
+        _translationToggleBtn = root.Q<Button>("btn-translation-toggle");
+        if (_translationToggleBtn != null)
+        {
+            _translationToggleBtn.style.display = DisplayStyle.None;
+            _translationToggleBtn.clicked += () =>
+            {
+                if (!_audioOn) return;
+                _translationOn = !_translationOn;
+                IsTranslationEnabled = _audioOn && _translationOn;
+                _translationToggleBtn.text = _translationOn ? "Translation · On" : "Translation · Off";
+                _translationToggleBtn.EnableInClassList("action-rail-btn-on", _translationOn);
+            };
+        }
+
         var debugHudLabel = root.Q<Label>("xr-debug-hud");
         if (debugHudLabel != null)
         {
@@ -193,6 +290,8 @@ public class App : MonoBehaviour
             var logger = _mainUI.AddComponent<XRDebugLogger>();
             logger.statusLabel = debugHudLabel;
         }
+
+        ActivateSignByDefaultForTesting();
     }
 
     private IEnumerator FlashButtonLabel(Button btn, string defaultText, string flashText, string flashClass, float seconds)
@@ -202,5 +301,39 @@ public class App : MonoBehaviour
         yield return new WaitForSeconds(seconds);
         btn.EnableInClassList(flashClass, false);
         btn.text = defaultText;
+    }
+
+    private void ActivateSignByDefaultForTesting()
+    {
+        _audioOn = false;
+        _translationOn = false;
+        _signOn = true;
+        CurrentInputMode = InputMode.Sign;
+        IsTranslationEnabled = false;
+
+        if (_asrToggleBtn != null)
+        {
+            _asrToggleBtn.text = "Automatic Speech Recognition";
+            _asrToggleBtn.EnableInClassList("action-rail-btn-on", false);
+        }
+
+        if (_signToggleBtn != null)
+        {
+            _signToggleBtn.text = "Sign Language · On";
+            _signToggleBtn.EnableInClassList("action-rail-btn-on", true);
+        }
+
+        if (_translationToggleBtn != null)
+        {
+            _translationToggleBtn.text = "Translation · Off";
+            _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
+            _translationToggleBtn.style.display = DisplayStyle.None;
+        }
+
+        var signClient = FindObjectOfType<SignInferenceClient>();
+        if (signClient != null)
+        {
+            signClient.SetSignCaptureActive(true);
+        }
     }
 }

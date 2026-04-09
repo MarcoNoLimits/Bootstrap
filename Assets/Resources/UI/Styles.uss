@@ -13,12 +13,14 @@
 
 /* Main HUD: only the action rail — no large plate (must match App.cs render texture size). */
 .glass-panel-minimal {
-    width: 180px;
-    height: 400px;
-    background-color: rgba(0, 0, 0, 0);
-    border-width: 0;
+    width: 260px;
+    height: 440px;
+    background-color: rgba(0, 0, 0, 0.42);
+    border-radius: 20px;
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.18);
     padding: 0;
-    overflow: visible;
+    overflow: hidden;
 }
 
 .row {
@@ -390,8 +392,8 @@
     justify-content: center;
     align-items: stretch;
     align-self: stretch;
-    padding-top: 16px;
-    padding-bottom: 16px;
+    padding-top: 8px;
+    padding-bottom: 8px;
     padding-left: 12px;
     padding-right: 12px;
     background-color: rgba(0, 0, 0, 0);
@@ -438,6 +440,15 @@
     margin-bottom: 0;
 }
 
+.action-rail-btn-settings {
+    background-color: rgba(0, 0, 0, 0.28);
+    border-color: rgba(255, 255, 255, 0.42);
+}
+
+.action-rail-btn-settings:hover {
+    background-color: rgba(0, 0, 0, 0.38);
+}
+
 /* Audio “on” state after pinch (class toggled from App.cs) */
 .action-rail-btn-on {
     background-color: rgba(40, 160, 90, 0.92);
@@ -454,8 +465,12 @@
 }
 
 .xr-debug-hud {
-    margin-top: 6px;
-    padding-top: 4px;
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 6px;
+    margin-top: 0;
+    padding-top: 0;
     min-height: 28px;
     font-size: 10px;
     color: rgba(200, 220, 255, 0.7);
