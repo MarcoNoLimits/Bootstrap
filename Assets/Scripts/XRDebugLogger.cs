@@ -14,10 +14,17 @@ public class XRDebugLogger : MonoBehaviour
     {
         if (statusLabel == null) return;
 
+        // Bottom HUD must show /infer caption (letter, text, hint) — not send/capture telemetry.
+        string infer = SignInferenceClient.LiveCaptionForHud;
+        if (!string.IsNullOrEmpty(infer))
+        {
+            statusLabel.text = infer;
+            return;
+        }
+
         string status = "Hands: ";
         GetDeviceStatus(XRNode.LeftHand, ref status);
         GetDeviceStatus(XRNode.RightHand, ref status);
-
         statusLabel.text = status;
     }
 

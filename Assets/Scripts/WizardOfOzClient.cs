@@ -69,7 +69,23 @@ public class WizardOfOzClient : MonoBehaviour
     private void Awake()
     {
         Debug.Log("[WizardOfOz] Unified Client Awake.");
-        _mainCam = Camera.main;
+        _mainCam = ResolveMainCamera();
+    }
+
+    private static Camera ResolveMainCamera()
+    {
+        if (Camera.main != null)
+            return Camera.main;
+
+        Camera[] cameras = FindObjectsOfType<Camera>();
+        for (int i = 0; i < cameras.Length; i++)
+        {
+            Camera c = cameras[i];
+            if (c != null && c.enabled && c.gameObject.activeInHierarchy)
+                return c;
+        }
+
+        return null;
     }
 
     private IEnumerator Start()
@@ -141,9 +157,7 @@ public class WizardOfOzClient : MonoBehaviour
         quad.transform.SetParent(_mainUIRoot.transform);
         quad.transform.localScale = new Vector3(1.0f, 0.2f, 1f);
 
-        Material mat = new Material(Shader.Find("Unlit/Transparent"));
-        mat.mainTexture = _uiRT;
-        quad.GetComponent<Renderer>().material = mat;
+        quad.GetComponent<Renderer>().material = WorldUiQuadMaterial.Create(_uiRT);
 
         // 5. Interaction
         Destroy(quad.GetComponent<Collider>());
@@ -236,6 +250,9 @@ public class WizardOfOzClient : MonoBehaviour
 
     private void Update()
     {
+        if (_mainCam == null)
+            _mainCam = ResolveMainCamera();
+
         if (_mainUIRoot != null && _mainCam != null)
         {
             Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.5f);
@@ -252,7 +269,7 @@ public class WizardOfOzClient : MonoBehaviour
                 if (_lastModeBanner != "sign")
                 {
                     _lastModeBanner = "sign";
-                    _uiManager.UpdateText("Getting sign...");
+                    // Subtitle is driven by SignInferenceClient (API caption); do not clear or overwrite here.
                 }
             }
             else if (App.CurrentInputMode == App.InputMode.None)
@@ -317,11 +334,31 @@ public class WizardOfOzClient : MonoBehaviour
         });
     }
 
+    private void OnApplicationQuit()
+    {
+        try
+        {
+            _voice?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[WizardOfOz] Dispose voice on quit: " + ex.Message);
+        }
+    }
+
     private void OnDestroy()
     {
         if (HololensAsrManager.Instance != null)
             HololensAsrManager.Instance.OnApiRequestFinished -= OnAsrHttpRoundTrip;
-        _voice?.Dispose();
+        try
+        {
+            _voice?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[WizardOfOz] Dispose voice on destroy: " + ex.Message);
+        }
+
         _uiRT?.Release();
     }
 }
@@ -459,7 +496,11 @@ public class VoiceManager : IDisposable
     private static void EnsurePhraseSystemForDictation() {
         if (PhraseRecognitionSystem.Status == SpeechSystemStatus.Running) {
             Debug.Log("[VoiceManager] Stopping PhraseRecognitionSystem to prevent conflict...");
-            PhraseRecognitionSystem.Shutdown();
+            try {
+                PhraseRecognitionSystem.Shutdown();
+            } catch (Exception ex) {
+                Debug.LogWarning($"[VoiceManager] PhraseRecognitionSystem.Shutdown: {ex.Message}");
+            }
         }
     }
 
@@ -550,15 +591,20 @@ public class VoiceManager : IDisposable
         } catch (Exception ex) {
             Debug.LogWarning($"[VoiceManager] Stop before dispose: {ex.Message}");
         }
-        _r.DictationResult -= OnDictationResult;
-        _r.DictationHypothesis -= OnDictationHypothesis;
-        _r.DictationError -= OnDictationError;
-        _r.DictationComplete -= OnDictationComplete;
-        _r.Dispose();
+        try {
+            _r.DictationResult -= OnDictationResult;
+            _r.DictationHypothesis -= OnDictationHypothesis;
+            _r.DictationError -= OnDictationError;
+            _r.DictationComplete -= OnDictationComplete;
+            _r.Dispose();
+        } catch (Exception ex) {
+            Debug.LogWarning($"[VoiceManager] DictationRecognizer dispose: {ex.Message}");
+        }
         _r = null;
     }
 
     public void Dispose() {
+        if (_disposed) return;
         _disposed = true;
         _restartPending = false;
         DisposeRecognizerOnly();

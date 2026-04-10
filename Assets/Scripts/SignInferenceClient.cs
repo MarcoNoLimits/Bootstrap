@@ -1,7 +1,9 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.UI;
@@ -29,11 +31,11 @@ public class InferResponse
 [DefaultExecutionOrder(-40)]
 public class SignInferenceClient : MonoBehaviour
 {
-    private const string WorkingStatusText = "Sign language mode is active and working.";
-
     [Header("API")]
-    [Tooltip("Use LAN IP for HoloLens tests, e.g. http://172.16.23.67:8010 (or localhost on same machine).")]
-    [SerializeField] private string baseUrl = "http://172.16.23.67:8010";
+    [Tooltip("If true, Awake sets the URL for this platform (Editor/PC: 127.0.0.1; UWP device: LAN IP). Turn off to use baseUrl from the inspector.")]
+    [SerializeField] private bool usePlatformDefaultApiUrl = true;
+    [Tooltip("Overridden at runtime when usePlatformDefaultApiUrl is true. HoloLens: use your PC Wi‑Fi IP if it changes.")]
+    [SerializeField] private string baseUrl = "http://127.0.0.1:8010";
     [SerializeField] private bool spell = true;
     [SerializeField] private string sessionId = "";
     [SerializeField] private float requestTimeoutSeconds = 4f;
@@ -44,7 +46,13 @@ public class SignInferenceClient : MonoBehaviour
     [Tooltip("If true, only allow WebCamTexture capture on HoloLens device builds (never desktop editor/webcam).")]
     [SerializeField] private bool hololensCameraOnly = true;
     [Tooltip("Editor-only debug: allow desktop webcam in Unity Editor while keeping device builds HoloLens-focused.")]
+#pragma warning disable 0414 // Only read in UNITY_EDITOR branch of IsCameraAllowedForCurrentRuntime()
     [SerializeField] private bool allowEditorDesktopCamera = true;
+#pragma warning restore 0414
+    [Header("HoloLens camera")]
+    [Tooltip("If WebCamTexture.Play fails (e.g. HRESULT 0xC00D3EA3 — camera preempted), retry this many times.")]
+    [SerializeField] private int webCamStartMaxAttempts = 6;
+    [SerializeField] private float webCamRetryDelaySeconds = 1.5f;
     [Tooltip("Optional texture source if not using WebCamTexture (e.g. RenderTexture converted elsewhere).")]
     [SerializeField] private Texture overrideSource;
     [SerializeField] private int targetSize = 224;
@@ -53,7 +61,7 @@ public class SignInferenceClient : MonoBehaviour
 
     [Header("Rate control")]
     [Tooltip("If false, sign capture stays idle until enabled from UI/code.")]
-    [SerializeField] private bool signCaptureActive = false;
+    [SerializeField] private bool signCaptureActive = true;
     [Tooltip("Inference requests per second, independent from camera FPS.")]
     [SerializeField] private float requestFps = 8f;
     [Tooltip("When enabled, sends the first inference request as soon as startup capture is ready.")]
@@ -95,6 +103,9 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private int saveEveryNSends = 20;
 
     private WebCamTexture _webCamTexture;
+    private Coroutine _webCamBootstrapCo;
+    /// <summary>User-facing line when PV camera cannot start (preemption, permissions, etc.).</summary>
+    private string _cameraUserMessage = "";
     private Texture2D _workingFrame;
     private Texture2D _roiTexture;
     private bool _requestInFlight;
@@ -105,7 +116,6 @@ public class SignInferenceClient : MonoBehaviour
     private string _lastServerText;
     private Color32[] _lastRoiSample;
     private int _frameTickCounter;
-    private bool _hasShownWorkingStatus;
     private bool _loggedFirstRequest;
     private bool _loggedFirstSuccess;
     private int _captureFrameCount;
@@ -114,9 +124,13 @@ public class SignInferenceClient : MonoBehaviour
     private string _lastSendState = "Idle";
     private float _lastSendAt = -1f;
     private string _debugFrameDir;
-    private string _lastRenderedStatus;
-    private float _nextStatusLogAt;
     private Label _subtitleLabel;
+    private Label _mainHudCaptionLabel;
+    private string _inferCaptionLine = "";
+    private bool _applicationIsQuitting;
+
+    /// <summary>Same string as the on-screen sign caption (letter, spell text, hint). <see cref="XRDebugLogger"/> reads this for <c>xr-debug-hud</c> — never send/capture counters.</summary>
+    public static string LiveCaptionForHud { get; private set; } = "";
 
     public event Action<InferResponse> OnInferResponse;
     public event Action<string> OnNetworkError;
@@ -137,6 +151,11 @@ public class SignInferenceClient : MonoBehaviour
 
     private void Awake()
     {
+        if (usePlatformDefaultApiUrl)
+        {
+            ApplyPlatformDefaultBaseUrl();
+        }
+
         if (string.IsNullOrWhiteSpace(sessionId))
         {
             sessionId = Guid.NewGuid().ToString("N");
@@ -150,21 +169,39 @@ public class SignInferenceClient : MonoBehaviour
         centerCropScale = Mathf.Clamp(centerCropScale, 0.25f, 1f);
         similaritySampleSize = Mathf.Clamp(similaritySampleSize, 8, 32);
         saveEveryNSends = Mathf.Max(1, saveEveryNSends);
+        webCamStartMaxAttempts = Mathf.Max(1, webCamStartMaxAttempts);
+        webCamRetryDelaySeconds = Mathf.Max(0.25f, webCamRetryDelaySeconds);
 
         _roiTexture = new Texture2D(targetSize, targetSize, TextureFormat.RGB24, false);
         _debugFrameDir = Path.Combine(Application.persistentDataPath, "sign_debug");
+    }
+
+    private void ApplyPlatformDefaultBaseUrl()
+    {
+#if UNITY_EDITOR
+        baseUrl = "http://127.0.0.1:8010";
+#elif UNITY_WSA && !UNITY_EDITOR
+        baseUrl = "http://172.16.23.67:8010";
+#else
+        baseUrl = "http://127.0.0.1:8010";
+#endif
+    }
+
+    private static void SetLiveCaptionForHud(string line)
+    {
+        LiveCaptionForHud = line ?? "";
     }
 
     private void Start()
     {
         if (useSubtitleLabelFallback)
         {
-            StartCoroutine(BindSubtitleLabelWhenReady());
+            StartCoroutine(BindToolkitCaptionLabelsWhenReady());
         }
 
         if (signCaptureActive && useWebCamTexture)
         {
-            StartWebCam();
+            RequestWebCamStart();
         }
 
         if (signCaptureActive && startCapturingOnLaunch)
@@ -173,8 +210,36 @@ public class SignInferenceClient : MonoBehaviour
         }
     }
 
+    private void OnApplicationPause(bool paused)
+    {
+        if (paused || _applicationIsQuitting)
+        {
+            return;
+        }
+
+        if (signCaptureActive && useWebCamTexture)
+        {
+            RequestWebCamStart();
+        }
+    }
+
+    private void OnApplicationQuit()
+    {
+        _applicationIsQuitting = true;
+        _requestInFlight = false;
+        StopWebCamBootstrap();
+        StopAllCoroutines();
+        SetLiveCaptionForHud("");
+        StopCameraCapture();
+    }
+
     private void Update()
     {
+        if (_applicationIsQuitting)
+        {
+            return;
+        }
+
         if (!signCaptureActive)
         {
             UpdateIdleStatusHint();
@@ -240,7 +305,7 @@ public class SignInferenceClient : MonoBehaviour
         {
             if (useWebCamTexture)
             {
-                StartWebCam();
+                RequestWebCamStart();
             }
             if (startCapturingOnLaunch)
             {
@@ -249,15 +314,21 @@ public class SignInferenceClient : MonoBehaviour
         }
         else
         {
+            StopWebCamBootstrap();
             StopCameraCapture();
             _requestInFlight = false;
             _lastSendState = "Idle";
+            _inferCaptionLine = "";
+            _cameraUserMessage = "";
+            SetLiveCaptionForHud("");
             UpdateIdleStatusHint();
         }
     }
 
     private void OnDestroy()
     {
+        _applicationIsQuitting = true;
+        StopWebCamBootstrap();
         StopCameraCapture();
 
         if (_workingFrame != null)
@@ -273,24 +344,134 @@ public class SignInferenceClient : MonoBehaviour
         }
     }
 
-    private void StartWebCam()
+    private void StopWebCamBootstrap()
     {
+        if (_webCamBootstrapCo != null)
+        {
+            StopCoroutine(_webCamBootstrapCo);
+            _webCamBootstrapCo = null;
+        }
+    }
+
+    /// <summary>
+    /// Starts (or restarts) PV/webcam with retries. On HoloLens, 0xC00D3EA3 usually means MRC, Device Portal stream, or another immersive app holds the camera.
+    /// </summary>
+    private void RequestWebCamStart()
+    {
+        if (!useWebCamTexture || !signCaptureActive || _applicationIsQuitting)
+        {
+            return;
+        }
+
         if (hololensCameraOnly && !IsCameraAllowedForCurrentRuntime())
         {
             Debug.LogWarning("[SignInferenceClient] Camera OFF: HoloLens-only camera mode is enabled. Skipping desktop webcam.");
             return;
         }
 
-        if (WebCamTexture.devices.Length == 0)
+        StopWebCamBootstrap();
+        _cameraUserMessage = "";
+        _webCamBootstrapCo = StartCoroutine(CoBootstrapWebCam());
+    }
+
+    private IEnumerator CoBootstrapWebCam()
+    {
+        for (int attempt = 0; attempt < webCamStartMaxAttempts; attempt++)
         {
-            Debug.LogWarning("[SignInferenceClient] No camera devices found. Set overrideSource.");
-            return;
+            if (!signCaptureActive || _applicationIsQuitting)
+            {
+                break;
+            }
+
+            StopCameraCapture();
+            yield return null;
+
+            if (WebCamTexture.devices.Length == 0)
+            {
+                _cameraUserMessage = "No camera device found. Assign overrideSource or check device permissions.";
+                Debug.LogWarning("[SignInferenceClient] No camera devices found. Set overrideSource.");
+                ApplyCaptionToSubtitle();
+                break;
+            }
+
+            string dev = WebCamTexture.devices[0].name;
+            Debug.Log($"[SignInferenceClient] WebCam attempt {attempt + 1}/{webCamStartMaxAttempts}: {dev}");
+
+            _webCamTexture = new WebCamTexture(dev, 896, 504, 30);
+            bool playThrew = false;
+            Exception playEx = null;
+            try
+            {
+                _webCamTexture.Play();
+            }
+            catch (Exception ex)
+            {
+                playThrew = true;
+                playEx = ex;
+            }
+
+            if (playThrew)
+            {
+                Debug.LogWarning("[SignInferenceClient] WebCamTexture.Play: " + (playEx != null ? playEx.Message : ""));
+                _cameraUserMessage = CameraErrorToUserMessage(playEx != null ? playEx.Message : "");
+                ApplyCaptionToSubtitle();
+                StopCameraCapture();
+                yield return new WaitForSecondsRealtime(webCamRetryDelaySeconds);
+                continue;
+            }
+
+            // Note: WebCamTexture.error exists only on newer Unity; poll isPlaying + width instead.
+            float deadline = Time.time + 5f;
+            while (Time.time < deadline && signCaptureActive && !_applicationIsQuitting)
+            {
+                if (_webCamTexture == null)
+                {
+                    break;
+                }
+
+                if (_webCamTexture.isPlaying && _webCamTexture.width > 16)
+                {
+                    _cameraUserMessage = "";
+                    Debug.Log("[SignInferenceClient] Camera streaming: " + dev);
+                    _webCamBootstrapCo = null;
+                    ApplyCaptionToSubtitle();
+                    yield break;
+                }
+
+                yield return null;
+            }
+
+            _cameraUserMessage =
+                "Camera did not start in time. Another app may be using the PV camera — close Mixed Reality Capture, Device Portal live view, or other immersive apps, then wait or restart this app.";
+            ApplyCaptionToSubtitle();
+            StopCameraCapture();
+            yield return new WaitForSecondsRealtime(webCamRetryDelaySeconds);
         }
 
-        string dev = WebCamTexture.devices[0].name;
-        Debug.Log("[SignInferenceClient] Camera ON: Starting WebCamTexture device: " + dev);
-        _webCamTexture = new WebCamTexture(dev, 896, 504, 30);
-        _webCamTexture.Play();
+        _webCamBootstrapCo = null;
+        if (string.IsNullOrEmpty(_cameraUserMessage))
+        {
+            _cameraUserMessage =
+                "Could not open camera after retries. Close apps using the camera (MRC, Device Portal preview) and try again.";
+            ApplyCaptionToSubtitle();
+        }
+    }
+
+    private static string CameraErrorToUserMessage(string error)
+    {
+        if (string.IsNullOrEmpty(error))
+        {
+            return "Camera failed to start.";
+        }
+
+        if (error.IndexOf("C00D3EA3", StringComparison.OrdinalIgnoreCase) >= 0
+            || error.IndexOf("preempted", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return
+                "Camera busy (another immersive app is using it). Close Mixed Reality Capture, Device Portal live camera, or other XR apps; then use Sign again or restart.";
+        }
+
+        return "Camera: " + error;
     }
 
     private void StopCameraCapture()
@@ -303,8 +484,20 @@ public class SignInferenceClient : MonoBehaviour
                 _webCamTexture.Stop();
             }
         }
-        catch { }
-        Destroy(_webCamTexture);
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[SignInferenceClient] WebCamTexture.Stop: " + ex.Message);
+        }
+
+        try
+        {
+            Destroy(_webCamTexture);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[SignInferenceClient] WebCamTexture Destroy: " + ex.Message);
+        }
+
         _webCamTexture = null;
     }
 
@@ -337,15 +530,15 @@ public class SignInferenceClient : MonoBehaviour
 
         if (useWebCamTexture)
         {
-            float deadline = Time.time + 3f;
-            while ((_webCamTexture == null || !_webCamTexture.isPlaying || _webCamTexture.width <= 16) && Time.time < deadline)
+            float deadline = Time.time + 12f;
+            while (GetActiveSourceTexture() == null && Time.time < deadline)
             {
                 yield return null;
             }
 
-            if (_webCamTexture == null || !_webCamTexture.isPlaying || _webCamTexture.width <= 16)
+            if (GetActiveSourceTexture() == null)
             {
-                Debug.LogWarning("[SignInferenceClient] Startup capture wait timed out. Camera not ready yet.");
+                Debug.LogWarning("[SignInferenceClient] Startup: camera not ready after wait (see on-screen camera message if preempted).");
             }
         }
         else
@@ -618,6 +811,12 @@ public class SignInferenceClient : MonoBehaviour
 
             yield return op;
 
+            if (_applicationIsQuitting)
+            {
+                _requestInFlight = false;
+                yield break;
+            }
+
             if (req.result != UnityWebRequest.Result.Success)
             {
                 string err = $"infer failed: {req.error}";
@@ -630,24 +829,22 @@ public class SignInferenceClient : MonoBehaviour
                 _sendSuccessCount++;
                 _lastSendState = "Send ok";
                 string json = req.downloadHandler.text;
-                InferResponse response = null;
-                try
-                {
-                    response = JsonUtility.FromJson<InferResponse>(json);
-                }
-                catch (Exception e)
+                if (!TryParseInferResponse(json, out InferResponse response, out string parseErr))
                 {
                     _lastSendState = "Bad JSON";
-                    OnNetworkError?.Invoke("json parse failed: " + e.Message);
+                    if (!string.IsNullOrEmpty(parseErr))
+                    {
+                        OnNetworkError?.Invoke(parseErr);
+                    }
                 }
-
-                if (response != null)
+                else
                 {
                     if (!_loggedFirstSuccess)
                     {
                         _loggedFirstSuccess = true;
                         Debug.Log("[SignInferenceClient] First inference response received.");
                     }
+
                     HandleInferResponse(response);
                     OnInferResponse?.Invoke(response);
                 }
@@ -659,11 +856,8 @@ public class SignInferenceClient : MonoBehaviour
 
     private void HandleInferResponse(InferResponse response)
     {
-        if (!_hasShownWorkingStatus && statusHintText != null)
-        {
-            statusHintText.text = WorkingStatusText;
-            _hasShownWorkingStatus = true;
-        }
+        _inferCaptionLine = FormatInferCaption(response);
+        ApplyCaptionToSubtitle();
 
         if (response.confidence >= confidenceThreshold && !string.IsNullOrEmpty(response.letter))
         {
@@ -671,100 +865,308 @@ public class SignInferenceClient : MonoBehaviour
             _nextUiApplyAt = Time.time + uiDebounceSeconds;
         }
 
+        bool captionUsesToolkit =
+            statusHintText != null || _subtitleLabel != null || _mainHudCaptionLabel != null;
+
         if (useServerTextAsAuthoritative && !string.IsNullOrEmpty(response.text))
         {
             if (!string.Equals(_lastServerText, response.text, StringComparison.Ordinal))
             {
                 _lastServerText = response.text;
-                if (serverText != null)
+                if (serverText != null && !captionUsesToolkit)
                 {
                     serverText.text = _lastServerText;
                 }
             }
         }
-
-        if (statusHintText != null && !string.IsNullOrEmpty(response.status_hint))
-        {
-            statusHintText.text = response.status_hint;
-        }
     }
 
     private void UpdateStatusHint()
     {
-        string source;
-        if (overrideSource != null)
-        {
-            source = "Override";
-        }
-        else if (_webCamTexture != null && _webCamTexture.isPlaying && _webCamTexture.width > 16)
-        {
-            source = IsRunningOnHoloLens() ? "HoloLensCam" : "EditorCam";
-        }
-        else
-        {
-            source = "NoCamera";
-        }
-
-        string lastAgo = _lastSendAt < 0f
-            ? "-"
-            : TimeSpan.FromSeconds(Mathf.Max(0f, Time.time - _lastSendAt)).ToString(@"ss\.f") + "s ago";
-
-        string statusLine =
-            $"Source:{source} Captured:{_captureFrameCount} Sent:{_sendAttemptCount}/{_sendSuccessCount} Last:{_lastSendState} ({lastAgo})";
-
-        SetStatusText(statusLine);
+        ApplyCaptionToSubtitle();
     }
 
     private void UpdateIdleStatusHint()
     {
+        SetLiveCaptionForHud("");
         // Keep idle state silent so it does not overwrite ASR/transcription captions.
     }
 
-    private void SetStatusText(string statusLine)
+    private void ApplyCaptionToSubtitle()
     {
-        Text target = statusHintText != null ? statusHintText : (serverText != null ? serverText : letterText);
-        if (target != null)
+        string caption;
+        if (!string.IsNullOrEmpty(_inferCaptionLine))
         {
-            target.text = statusLine;
-            _lastRenderedStatus = statusLine;
-            return;
+            caption = _inferCaptionLine;
+        }
+        else if (signCaptureActive && useWebCamTexture && !string.IsNullOrEmpty(_cameraUserMessage))
+        {
+            caption = _cameraUserMessage;
+        }
+        else if (GetActiveSourceTexture() == null)
+        {
+            caption = "Sign: camera not ready — check permissions or HoloLens PV.";
+        }
+        else
+        {
+            caption = "Sign: waiting for API…";
+        }
+
+        // Update every bound outlet (do not return early — main HUD caption must not be skipped when subtitle-text exists).
+        if (statusHintText != null)
+        {
+            statusHintText.text = caption;
         }
 
         if (_subtitleLabel != null)
         {
-            _subtitleLabel.text = statusLine;
-            _lastRenderedStatus = statusLine;
-            return;
+            _subtitleLabel.text = caption;
+            _subtitleLabel.style.display = DisplayStyle.Flex;
         }
 
-        if (_lastRenderedStatus != statusLine || Time.time >= _nextStatusLogAt)
+        if (serverText != null)
         {
-            Debug.Log("[SignInferenceClient] " + statusLine + " (Assign statusHintText/serverText/letterText to show on-screen)");
-            _lastRenderedStatus = statusLine;
-            _nextStatusLogAt = Time.time + 2f;
+            serverText.text = caption;
         }
+
+        if (_mainHudCaptionLabel != null)
+        {
+            _mainHudCaptionLabel.text = caption;
+            _mainHudCaptionLabel.style.display = DisplayStyle.Flex;
+        }
+
+        SetLiveCaptionForHud(caption);
     }
 
-    private IEnumerator BindSubtitleLabelWhenReady()
+    /// <summary>
+    /// JsonUtility often fails on BOM-prefixed bodies or slightly non-standard JSON; fall back to field extraction.
+    /// </summary>
+    private static bool TryParseInferResponse(string raw, out InferResponse response, out string error)
+    {
+        response = null;
+        error = null;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            error = "empty /infer body";
+            return false;
+        }
+
+        string json = ExtractJsonObject(raw.Trim());
+        if (json.Length > 0 && json[0] == '\uFEFF')
+        {
+            json = json.Substring(1);
+        }
+
+        InferResponse r = null;
+        try
+        {
+            r = JsonUtility.FromJson<InferResponse>(json);
+        }
+        catch (Exception ex)
+        {
+            error = "json parse failed: " + ex.Message;
+        }
+
+        if (r != null && InferResponseHasContent(r))
+        {
+            response = r;
+            return true;
+        }
+
+        InferResponse manual = new InferResponse();
+        manual.letter = ReadJsonStringField(json, "letter");
+        manual.text = ReadJsonStringField(json, "text");
+        manual.status_hint = ReadJsonStringField(json, "status_hint");
+        manual.model = ReadJsonStringField(json, "model");
+        string confStr = ReadJsonNumberField(json, "confidence");
+        if (!string.IsNullOrEmpty(confStr)
+            && float.TryParse(confStr, NumberStyles.Float, CultureInfo.InvariantCulture, out float cf))
+        {
+            manual.confidence = cf;
+        }
+
+        if (InferResponseHasContent(manual))
+        {
+            response = manual;
+            return true;
+        }
+
+        error = error ?? "could not read letter/text/status_hint from /infer JSON";
+        return false;
+    }
+
+    private static bool InferResponseHasContent(InferResponse r)
+    {
+        if (r == null) return false;
+        return !string.IsNullOrEmpty(r.letter)
+            || !string.IsNullOrEmpty(r.text)
+            || !string.IsNullOrEmpty(r.status_hint);
+    }
+
+    private static string ExtractJsonObject(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        int a = s.IndexOf('{');
+        int b = s.LastIndexOf('}');
+        if (a >= 0 && b > a)
+        {
+            return s.Substring(a, b - a + 1);
+        }
+
+        return s.Trim();
+    }
+
+    private static string ReadJsonStringField(string json, string key)
+    {
+        string needle = "\"" + key + "\"";
+        int i = json.IndexOf(needle, StringComparison.Ordinal);
+        if (i < 0) return null;
+        i = json.IndexOf(':', i);
+        if (i < 0) return null;
+        i++;
+        while (i < json.Length && char.IsWhiteSpace(json[i]))
+        {
+            i++;
+        }
+
+        if (i >= json.Length || json[i] != '"')
+        {
+            return null;
+        }
+
+        i++;
+        var sb = new StringBuilder();
+        while (i < json.Length)
+        {
+            char c = json[i];
+            if (c == '\\' && i + 1 < json.Length)
+            {
+                char e = json[i + 1];
+                if (e == '"' || e == '\\')
+                {
+                    sb.Append(e);
+                    i += 2;
+                    continue;
+                }
+
+                if (e == 'n')
+                {
+                    sb.Append('\n');
+                    i += 2;
+                    continue;
+                }
+            }
+
+            if (c == '"')
+            {
+                break;
+            }
+
+            sb.Append(c);
+            i++;
+        }
+
+        return sb.ToString();
+    }
+
+    private static string ReadJsonNumberField(string json, string key)
+    {
+        string needle = "\"" + key + "\"";
+        int i = json.IndexOf(needle, StringComparison.Ordinal);
+        if (i < 0) return null;
+        i = json.IndexOf(':', i);
+        if (i < 0) return null;
+        i++;
+        while (i < json.Length && char.IsWhiteSpace(json[i]))
+        {
+            i++;
+        }
+
+        int start = i;
+        while (i < json.Length)
+        {
+            char c = json[i];
+            if (char.IsDigit(c) || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')
+            {
+                i++;
+                continue;
+            }
+
+            break;
+        }
+
+        if (i == start) return null;
+        return json.Substring(start, i - start);
+    }
+
+    private static string FormatInferCaption(InferResponse r)
+    {
+        if (r == null)
+        {
+            return "";
+        }
+
+        var parts = new List<string>();
+        // Spell / sentence buffer is usually what users want to read first.
+        if (!string.IsNullOrEmpty(r.text))
+        {
+            parts.Add(r.text.Trim());
+        }
+
+        if (!string.IsNullOrEmpty(r.letter))
+        {
+            parts.Add($"{r.letter} ({Mathf.Clamp01(r.confidence):P0})");
+        }
+
+        if (!string.IsNullOrEmpty(r.status_hint))
+        {
+            parts.Add(r.status_hint);
+        }
+
+        return parts.Count > 0 ? string.Join(" · ", parts) : "";
+    }
+
+    private IEnumerator BindToolkitCaptionLabelsWhenReady()
     {
         float deadline = Time.time + 8f;
-        while (_subtitleLabel == null && Time.time < deadline)
+        while (Time.time < deadline)
         {
             UIDocument[] docs = FindObjectsOfType<UIDocument>();
             for (int i = 0; i < docs.Length; i++)
             {
                 var root = docs[i] != null ? docs[i].rootVisualElement : null;
                 if (root == null) continue;
-                Label candidate = root.Q<Label>("subtitle-text");
-                if (candidate != null)
+                if (_subtitleLabel == null)
                 {
-                    _subtitleLabel = candidate;
-                    Debug.Log("[SignInferenceClient] Bound UI Toolkit subtitle-text label for sign status.");
-                    yield break;
+                    Label sub = root.Q<Label>("subtitle-text");
+                    if (sub != null)
+                    {
+                        _subtitleLabel = sub;
+                        Debug.Log("[SignInferenceClient] Bound subtitle-text for sign captions.");
+                    }
+                }
+
+                if (_mainHudCaptionLabel == null)
+                {
+                    Label mainCap = root.Q<Label>("sign-inference-caption");
+                    if (mainCap != null)
+                    {
+                        _mainHudCaptionLabel = mainCap;
+                        Debug.Log("[SignInferenceClient] Bound sign-inference-caption on MainLayout.");
+                    }
                 }
             }
+
+            if (_subtitleLabel != null && _mainHudCaptionLabel != null)
+            {
+                ApplyCaptionToSubtitle();
+                yield break;
+            }
+
             yield return null;
         }
+
+        ApplyCaptionToSubtitle();
     }
 
     private void MaybeSaveDebugFrame(byte[] jpegBytes, string tag)

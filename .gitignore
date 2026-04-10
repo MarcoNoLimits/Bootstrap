@@ -50,3 +50,19 @@ Thumbs.db
 
 # Gradle
 .gradle/
+
+# Visual Studio / MSBuild workspace (Copilot indices, caches — do not commit)
+.vs/
+
+# Unity per-user editor data (layouts, local editor prefs)
+UserSettings/
+
+# Unity UWP / IL2CPP Visual Studio export (rebuild from Unity; very large)
+UWP/
+
+# Signing certificates — never commit
+*.pfx
+*.pfx.meta
+
+# Unity recordings / captures
+Recordings/

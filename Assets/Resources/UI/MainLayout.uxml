@@ -9,6 +9,7 @@
                 <ui:Button name="btn-slr-capture" text="Sign Language" class="action-rail-btn" tooltip="Sign language mode is active" />
                 <ui:Button name="btn-settings-rail" text="Settings" class="action-rail-btn action-rail-btn-outline action-rail-btn-last action-rail-btn-settings" tooltip="Open settings (placeholder)" />
                 <ui:Button name="btn-translation-toggle" text="Translation · Off" class="action-rail-btn action-rail-btn-outline" tooltip="Enable translation while ASR is active" />
+                <ui:Label name="sign-inference-caption" class="sign-inference-caption" text="" />
                 <ui:Label name="xr-debug-hud" class="xr-debug-hud" text="" />
             </ui:VisualElement>
             <!-- Settings sidebar hidden with main screen -->

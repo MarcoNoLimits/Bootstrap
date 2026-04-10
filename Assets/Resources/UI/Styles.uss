@@ -464,6 +464,23 @@
     color: rgba(30, 25, 10, 0.98);
 }
 
+/* Live /infer text (letter, spell line, hint) — above the debug HUD */
+.sign-inference-caption {
+    margin-left: 8px;
+    margin-right: 8px;
+    margin-top: 4px;
+    margin-bottom: 2px;
+    padding: 8px 10px;
+    min-height: 36px;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.96);
+    white-space: normal;
+    -unity-text-align: middle-center;
+    -unity-font-style: bold;
+    background-color: rgba(0, 40, 80, 0.55);
+    border-radius: 10px;
+}
+
 .xr-debug-hud {
     position: absolute;
     left: 12px;

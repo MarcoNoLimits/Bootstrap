@@ -17,7 +17,7 @@ public class App : MonoBehaviour
     [SerializeField] private float _distance = 1.5f;
     [SerializeField] private float _smoothSpeed = 4f;
     [Tooltip("Positive = right side of the view (camera +X).")]
-    [SerializeField] private float _rightOffsetMeters = 0.34f;
+    [SerializeField] private float _rightOffsetMeters = 0.64f;
     [Tooltip("Optional vertical nudge (camera +Y).")]
     [SerializeField] private float _verticalOffsetMeters = -0.05f;
     [Header("Scene Background")]
@@ -53,7 +53,7 @@ public class App : MonoBehaviour
 
     private void Start()
     {
-        _mainCam = Camera.main;
+        _mainCam = ResolveMainCamera();
         CurrentInputMode = InputMode.None;
         IsTranslationEnabled = false;
         
@@ -70,7 +70,7 @@ public class App : MonoBehaviour
     {
         if (_mainCam == null)
         {
-            _mainCam = Camera.main;
+            _mainCam = ResolveMainCamera();
             if (_mainCam != null)
             {
                 _mainCam.clearFlags = CameraClearFlags.SolidColor;
@@ -147,11 +147,8 @@ public class App : MonoBehaviour
         uiMeshCollider.sharedMesh = quad.GetComponent<MeshFilter>().sharedMesh;
         uiMeshCollider.convex = false;
 
-        // 5. Material Setup
-        // Unlit/Transparent is standard. 
-        Material mat = new Material(Shader.Find("Unlit/Transparent"));
-        mat.mainTexture = rt;
-        quad.GetComponent<Renderer>().material = mat;
+        // 5. Material (project shader — built-in Unlit/* is often stripped on UWP/IL2CPP → magenta quad)
+        quad.GetComponent<Renderer>().material = WorldUiQuadMaterial.Create(rt);
 
         // 6. Scale the Quad to match physical size
         // _uiWidth = 800, _scale = 0.001 => 0.8m width
@@ -292,6 +289,23 @@ public class App : MonoBehaviour
         }
 
         ActivateSignByDefaultForTesting();
+    }
+
+    /// <summary>HoloLens/XR: prefer MainCamera; fallback to any enabled camera so world UI still parents correctly.</summary>
+    private static Camera ResolveMainCamera()
+    {
+        if (Camera.main != null)
+            return Camera.main;
+
+        Camera[] cameras = FindObjectsOfType<Camera>();
+        for (int i = 0; i < cameras.Length; i++)
+        {
+            Camera c = cameras[i];
+            if (c != null && c.enabled && c.gameObject.activeInHierarchy)
+                return c;
+        }
+
+        return null;
     }
 
     private IEnumerator FlashButtonLabel(Button btn, string defaultText, string flashText, string flashClass, float seconds)
