@@ -22,9 +22,9 @@ public class InferResponse
 /// <summary>
 /// HoloLens inference client:
 /// - Captures camera frames (WebCamTexture) or an override Texture source
-/// - Crops ROI on-device (center crop for smoke tests)
+/// - Crops ROI on-device: optional hand ROI (OpenXR hands + AR Foundation PV projection) or center crop
 /// - Resizes to 224x224
-/// - JPEG-encodes and POSTs multipart form-data to /infer
+/// - JPEG-encodes and POSTs multipart form-data to /infer (field name <c>image</c>; filename <c>hand.jpg</c> in hand ROI mode)
 /// - Parses JSON and updates UI with debounce/confidence threshold
 /// - Exposes optional spell endpoint methods for UI buttons
 /// </summary>
@@ -58,6 +58,13 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private int targetSize = 224;
     [SerializeField] private int jpegQuality = 70;
     [SerializeField, Range(0.25f, 1f)] private float centerCropScale = 0.65f;
+
+    [Header("Hand ROI + PV (HoloLens 2)")]
+    [Tooltip("Use OpenXR hand joints + AR Foundation locatable-camera projection (see SignLanguageHandRoiPipeline). When off, uses center crop.")]
+    [SerializeField] private bool useHandRoiInference;
+    [SerializeField] private SignLanguageHandRoiPipeline handRoiPipeline;
+    [Tooltip("Multipart filename for /infer when hand ROI is used (spec: hand.jpg).")]
+    [SerializeField] private string handRoiMultipartFileName = "hand.jpg";
 
     [Header("Rate control")]
     [Tooltip("If false, sign capture stays idle until enabled from UI/code.")]
@@ -107,6 +114,7 @@ public class SignInferenceClient : MonoBehaviour
     /// <summary>User-facing line when PV camera cannot start (preemption, permissions, etc.).</summary>
     private string _cameraUserMessage = "";
     private Texture2D _workingFrame;
+    private Texture2D _handCropReadback;
     private Texture2D _roiTexture;
     private bool _requestInFlight;
     private float _nextRequestAt;
@@ -121,6 +129,10 @@ public class SignInferenceClient : MonoBehaviour
     private int _captureFrameCount;
     private int _sendAttemptCount;
     private int _sendSuccessCount;
+    private int _skippedHandRoiFrames;
+    private int _handRoiLogCounter;
+    private bool _warnedMissingHandPipeline;
+    private string _lastMultipartFileName = "frame.jpg";
     private string _lastSendState = "Idle";
     private float _lastSendAt = -1f;
     private string _debugFrameDir;
@@ -288,7 +300,7 @@ public class SignInferenceClient : MonoBehaviour
 
         _captureFrameCount++;
 
-        if (!TryBuildJpegCrop(src, out byte[] jpegBytes))
+        if (!TryBuildJpegForInference(src, out byte[] jpegBytes))
         {
             return;
         }
@@ -335,6 +347,12 @@ public class SignInferenceClient : MonoBehaviour
         {
             Destroy(_workingFrame);
             _workingFrame = null;
+        }
+
+        if (_handCropReadback != null)
+        {
+            Destroy(_handCropReadback);
+            _handCropReadback = null;
         }
 
         if (_roiTexture != null)
@@ -564,7 +582,7 @@ public class SignInferenceClient : MonoBehaviour
             return;
         }
 
-        if (!TryBuildJpegCrop(src, out byte[] jpegBytes))
+        if (!TryBuildJpegForInference(src, out byte[] jpegBytes))
         {
             return;
         }
@@ -577,8 +595,112 @@ public class SignInferenceClient : MonoBehaviour
         _sendAttemptCount++;
         _lastSendState = "Sending";
         _lastSendAt = Time.time;
+        _lastMultipartFileName = useHandRoiInference && handRoiPipeline != null
+            ? (string.IsNullOrEmpty(handRoiMultipartFileName) ? "hand.jpg" : handRoiMultipartFileName)
+            : "frame.jpg";
         MaybeSaveDebugFrame(jpegBytes, tag);
+        MaybeLogHandRoiStats(jpegBytes);
         StartCoroutine(PostInfer(jpegBytes));
+    }
+
+    private void MaybeLogHandRoiStats(byte[] jpegBytes)
+    {
+        if (!useHandRoiInference || handRoiPipeline == null)
+        {
+            return;
+        }
+
+        _handRoiLogCounter++;
+        if ((_handRoiLogCounter % 120) != 0)
+        {
+            return;
+        }
+
+        RectInt roi = handRoiPipeline.LastRoi;
+        int jpg = jpegBytes != null ? jpegBytes.Length : 0;
+        Debug.Log(
+            $"[SignInferenceClient] Hand ROI: {roi.width}x{roi.height} px, JPEG ~{jpg} bytes, skipped (no valid ROI) frames ~{_skippedHandRoiFrames} (cumulative).");
+    }
+
+    private bool TryBuildJpegForInference(Texture source, out byte[] jpegBytes)
+    {
+        if (useHandRoiInference)
+        {
+            if (handRoiPipeline == null)
+            {
+                if (!_warnedMissingHandPipeline)
+                {
+                    _warnedMissingHandPipeline = true;
+                    Debug.LogWarning(
+                        "[SignInferenceClient] useHandRoiInference is enabled but handRoiPipeline is not assigned; inference JPEGs are skipped. Assign SignLanguageHandRoiPipeline or disable useHandRoiInference.");
+                }
+
+                jpegBytes = null;
+                return false;
+            }
+
+            return TryBuildJpegHandRoi(source, out jpegBytes);
+        }
+
+        return TryBuildJpegCrop(source, out jpegBytes);
+    }
+
+    /// <summary>
+    /// Crops the PV/WebCam texture to the hand bounding box (padded), resizes to <see cref="targetSize"/>, JPEG-encodes.
+    /// </summary>
+    private bool TryBuildJpegHandRoi(Texture source, out byte[] jpegBytes)
+    {
+        jpegBytes = null;
+        handRoiPipeline.SetPvTextureDimensions(source.width, source.height);
+        if (!handRoiPipeline.TryGetHandRoiInPvPixels(out RectInt roi, out _))
+        {
+            _skippedHandRoiFrames++;
+            return false;
+        }
+
+        int rw = roi.width;
+        int rh = roi.height;
+        if (rw <= 0 || rh <= 0)
+        {
+            return false;
+        }
+
+        var scale = new Vector2(rw / (float)source.width, rh / (float)source.height);
+        var offset = new Vector2(roi.x / (float)source.width, roi.y / (float)source.height);
+
+        RenderTexture rt = RenderTexture.GetTemporary(rw, rh, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+        Graphics.Blit(source, rt, scale, offset);
+        RenderTexture prev = RenderTexture.active;
+        RenderTexture.active = rt;
+
+        if (_handCropReadback == null || _handCropReadback.width != rw || _handCropReadback.height != rh)
+        {
+            if (_handCropReadback != null)
+            {
+                Destroy(_handCropReadback);
+            }
+
+            _handCropReadback = new Texture2D(rw, rh, TextureFormat.RGB24, false);
+        }
+
+        _handCropReadback.ReadPixels(new Rect(0, 0, rw, rh), 0, 0);
+        _handCropReadback.Apply(false, false);
+        RenderTexture.active = prev;
+        RenderTexture.ReleaseTemporary(rt);
+
+        Color[] croppedPixels = _handCropReadback.GetPixels();
+        _roiTexture.Reinitialize(targetSize, targetSize, TextureFormat.RGB24, false);
+        _roiTexture.SetPixels(ScalePixelsBilinear(croppedPixels, rw, rh, targetSize, targetSize));
+        _roiTexture.Apply(false, false);
+
+        jpegBytes = _roiTexture.EncodeToJPG(jpegQuality);
+
+        if (skipSimilarFrames && IsRoiTooSimilar(_roiTexture))
+        {
+            return false;
+        }
+
+        return jpegBytes != null && jpegBytes.Length > 0;
     }
 
     private Texture GetActiveSourceTexture()
@@ -774,7 +896,7 @@ public class SignInferenceClient : MonoBehaviour
         }
         List<IMultipartFormSection> form = new List<IMultipartFormSection>
         {
-            new MultipartFormFileSection("image", jpegBytes, "frame.jpg", "image/jpeg")
+            new MultipartFormFileSection("image", jpegBytes, _lastMultipartFileName ?? "frame.jpg", "image/jpeg")
         };
 
         if (spell)
