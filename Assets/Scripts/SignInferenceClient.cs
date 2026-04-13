@@ -108,6 +108,10 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private bool saveDebugFrames = false;
     [Tooltip("Save one debug frame every N send attempts.")]
     [SerializeField] private int saveEveryNSends = 20;
+    [Tooltip("If enabled, saves the first sent inference JPEGs exactly as posted to /infer.")]
+    [SerializeField] private bool saveFirstSentFrames = true;
+    [Tooltip("How many sent inference frames to save for visual inspection.")]
+    [SerializeField] private int saveFirstSentFramesCount = 30;
 
     private WebCamTexture _webCamTexture;
     private Coroutine _webCamBootstrapCo;
@@ -136,6 +140,9 @@ public class SignInferenceClient : MonoBehaviour
     private string _lastSendState = "Idle";
     private float _lastSendAt = -1f;
     private string _debugFrameDir;
+    private string _sentFramesDir;
+    private int _savedSentFramesCount;
+    private bool _loggedSentFramesTargetPath;
     private Label _subtitleLabel;
     private Label _mainHudCaptionLabel;
     private string _inferCaptionLine = "";
@@ -181,11 +188,13 @@ public class SignInferenceClient : MonoBehaviour
         centerCropScale = Mathf.Clamp(centerCropScale, 0.25f, 1f);
         similaritySampleSize = Mathf.Clamp(similaritySampleSize, 8, 32);
         saveEveryNSends = Mathf.Max(1, saveEveryNSends);
+        saveFirstSentFramesCount = Mathf.Max(0, saveFirstSentFramesCount);
         webCamStartMaxAttempts = Mathf.Max(1, webCamStartMaxAttempts);
         webCamRetryDelaySeconds = Mathf.Max(0.25f, webCamRetryDelaySeconds);
 
         _roiTexture = new Texture2D(targetSize, targetSize, TextureFormat.RGB24, false);
         _debugFrameDir = Path.Combine(Application.persistentDataPath, "sign_debug");
+        _sentFramesDir = ResolveSentFramesDirectory();
     }
 
     private void ApplyPlatformDefaultBaseUrl()
@@ -599,6 +608,7 @@ public class SignInferenceClient : MonoBehaviour
             ? (string.IsNullOrEmpty(handRoiMultipartFileName) ? "hand.jpg" : handRoiMultipartFileName)
             : "frame.jpg";
         MaybeSaveDebugFrame(jpegBytes, tag);
+        MaybeSaveFirstSentFrame(jpegBytes, tag);
         MaybeLogHandRoiStats(jpegBytes);
         StartCoroutine(PostInfer(jpegBytes));
     }
@@ -1311,6 +1321,60 @@ public class SignInferenceClient : MonoBehaviour
         {
             Debug.LogWarning("[SignInferenceClient] Could not save debug frame: " + e.Message);
         }
+    }
+
+    private void MaybeSaveFirstSentFrame(byte[] jpegBytes, string tag)
+    {
+        if (!saveFirstSentFrames || saveFirstSentFramesCount <= 0 || jpegBytes == null || jpegBytes.Length == 0)
+        {
+            return;
+        }
+
+        if (_savedSentFramesCount >= saveFirstSentFramesCount)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!Directory.Exists(_sentFramesDir))
+            {
+                Directory.CreateDirectory(_sentFramesDir);
+            }
+
+            _savedSentFramesCount++;
+            string path = Path.Combine(
+                _sentFramesDir,
+                $"infer_sent_{_savedSentFramesCount:D2}_{DateTime.Now:yyyyMMdd_HHmmss_fff}_{tag}.jpg");
+            File.WriteAllBytes(path, jpegBytes);
+
+            if (!_loggedSentFramesTargetPath)
+            {
+                _loggedSentFramesTargetPath = true;
+                Debug.Log("[SignInferenceClient] Saving first sent inference frames to: " + _sentFramesDir);
+            }
+
+            if (_savedSentFramesCount == saveFirstSentFramesCount)
+            {
+                Debug.Log("[SignInferenceClient] Saved first " + saveFirstSentFramesCount + " sent inference frames.");
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[SignInferenceClient] Could not save sent inference frame: " + e.Message);
+        }
+    }
+
+    private static string ResolveSentFramesDirectory()
+    {
+#if UNITY_EDITOR
+        // Project root while running in editor.
+        string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        return Path.Combine(projectRoot, "sent_infer_frames");
+#else
+        // Device/runtime fallback.
+        return Path.Combine(Application.persistentDataPath, "sent_infer_frames");
+#endif
     }
 
     public void SpellCommit() => StartCoroutine(PostSpellCommand("/spell/commit"));
