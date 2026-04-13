@@ -15,10 +15,10 @@
 .glass-panel-minimal {
     width: 260px;
     height: 440px;
-    background-color: rgba(0, 0, 0, 0.42);
+    background-color: rgba(0, 0, 0, 0);
     border-radius: 20px;
-    border-width: 1px;
-    border-color: rgba(255, 255, 255, 0.18);
+    border-width: 0;
+    border-color: rgba(0, 0, 0, 0);
     padding: 0;
     overflow: hidden;
 }
@@ -162,7 +162,6 @@
     bottom: 10px;
     flex-direction: row;
     align-items: center;
-    gap: 6px;
     padding-top: 2px;
     padding-bottom: 2px;
     padding-left: 8px;
@@ -174,6 +173,7 @@
 .translation-toggle-label {
     font-size: 11px;
     color: rgba(220, 235, 255, 0.75);
+    margin-right: 6px;
 }
 
 .translation-toggle-switch {

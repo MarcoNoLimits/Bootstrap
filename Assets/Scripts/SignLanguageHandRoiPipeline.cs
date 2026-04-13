@@ -217,7 +217,7 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
 
     private static bool IsJointUsable(XRHandJoint joint)
     {
-        return joint.trackingState.HasFlag(XRHandJointTrackingState.Position);
+        return joint.trackingState.HasFlag(XRHandJointTrackingState.Pose);
     }
 
     private bool TryPickHand(out XRHand hand)

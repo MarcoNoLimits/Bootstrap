@@ -17,11 +17,11 @@ public class App : MonoBehaviour
     [SerializeField] private float _distance = 1.5f;
     [SerializeField] private float _smoothSpeed = 4f;
     [Tooltip("Positive = right side of the view (camera +X).")]
-    [SerializeField] private float _rightOffsetMeters = 0.64f;
+    [SerializeField] private float _rightOffsetMeters = 0.36f;
     [Tooltip("Optional vertical nudge (camera +Y).")]
     [SerializeField] private float _verticalOffsetMeters = -0.05f;
     [Header("Scene Background")]
-    [SerializeField] private Color _sceneBackgroundColor = new Color(0.06f, 0.09f, 0.14f, 1f);
+    [SerializeField] private Color _sceneBackgroundColor = new Color(0f, 0f, 0f, 0f);
 
     // UI DIMENSIONS (must match USS .glass-panel-minimal)
     private float _uiWidth = 260f;
@@ -87,7 +87,7 @@ public class App : MonoBehaviour
     {
         if (_mainUI == null) return;
 
-        // 1. Target position: in front of camera, shifted to the right (not centered)
+        // 1. Target position: in front of camera; optional small +X via _rightOffsetMeters
         Transform cam = _mainCam.transform;
         Vector3 targetPos = cam.position
             + cam.forward * _distance

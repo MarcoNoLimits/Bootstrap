@@ -137,7 +137,6 @@ public class SignInferenceClient : MonoBehaviour
     private int _handRoiLogCounter;
     private bool _warnedMissingHandPipeline;
     private string _lastMultipartFileName = "frame.jpg";
-    private string _lastSendState = "Idle";
     private float _lastSendAt = -1f;
     private string _debugFrameDir;
     private string _sentFramesDir;
@@ -338,7 +337,6 @@ public class SignInferenceClient : MonoBehaviour
             StopWebCamBootstrap();
             StopCameraCapture();
             _requestInFlight = false;
-            _lastSendState = "Idle";
             _inferCaptionLine = "";
             _cameraUserMessage = "";
             SetLiveCaptionForHud("");
@@ -602,7 +600,6 @@ public class SignInferenceClient : MonoBehaviour
     private void QueueInference(byte[] jpegBytes, string tag)
     {
         _sendAttemptCount++;
-        _lastSendState = "Sending";
         _lastSendAt = Time.time;
         _lastMultipartFileName = useHandRoiInference && handRoiPipeline != null
             ? (string.IsNullOrEmpty(handRoiMultipartFileName) ? "hand.jpg" : handRoiMultipartFileName)
@@ -931,7 +928,6 @@ public class SignInferenceClient : MonoBehaviour
             }
             catch (InvalidOperationException ex)
             {
-                _lastSendState = "HTTP blocked";
                 string err =
                     "HTTP blocked by Unity Player setting. Set Player > Other Settings > Allow downloads over HTTP = Always allowed. " +
                     ex.Message;
@@ -953,17 +949,14 @@ public class SignInferenceClient : MonoBehaviour
             {
                 string err = $"infer failed: {req.error}";
                 Debug.LogWarning("[SignInferenceClient] " + err);
-                _lastSendState = "Send failed";
                 OnNetworkError?.Invoke(err);
             }
             else
             {
                 _sendSuccessCount++;
-                _lastSendState = "Send ok";
                 string json = req.downloadHandler.text;
                 if (!TryParseInferResponse(json, out InferResponse response, out string parseErr))
                 {
-                    _lastSendState = "Bad JSON";
                     if (!string.IsNullOrEmpty(parseErr))
                     {
                         OnNetworkError?.Invoke(parseErr);
