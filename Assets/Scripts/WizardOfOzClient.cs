@@ -5,8 +5,9 @@ using UnityEngine.Windows.Speech;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Net.Sockets;
+using System.Net.Http;
 using System.Text;
+using System.Text.RegularExpressions;
 
 /// <summary>
 /// Unified controller for the Wizard of Oz Machine Translation Demo.
@@ -18,6 +19,12 @@ public class WizardOfOzClient : MonoBehaviour
     [Header("Settings")]
     public string serverIP = "localhost";
     public int serverPort = 18080;
+
+    [Header("Translation API (Hugging Face NMT)")]
+    [Tooltip("Base URL only; /translate is appended automatically.")]
+    [SerializeField] private string translationBaseUrl = "https://marconolimits-nmt.hf.space";
+    [Tooltip("Optional X-API-Key for the hosted NMT space. Leave empty when key enforcement is off.")]
+    [SerializeField] private string translationApiKey = "";
 
     [Header("ASR")]
     [Tooltip("Primary transcribe URL (POST float32 LE mono, application/octet-stream, X-Sample-Rate; JSON { \"text\" }). Default: HF API. Clear to use only HoloLens / Windows dictation.")]
@@ -75,14 +82,20 @@ public class WizardOfOzClient : MonoBehaviour
     private static Camera ResolveMainCamera()
     {
         if (Camera.main != null)
+        {
+            Camera.main.stereoTargetEye = StereoTargetEyeMask.Both;
             return Camera.main;
+        }
 
         Camera[] cameras = FindObjectsOfType<Camera>();
         for (int i = 0; i < cameras.Length; i++)
         {
             Camera c = cameras[i];
             if (c != null && c.enabled && c.gameObject.activeInHierarchy)
+            {
+                c.stereoTargetEye = StereoTargetEyeMask.Both;
                 return c;
+            }
         }
 
         return null;
@@ -106,7 +119,7 @@ public class WizardOfOzClient : MonoBehaviour
         {
             try {
                 _uiManager = new UIManager(_uiDoc);
-                _network = new NetworkManager(serverIP, serverPort);
+                _network = new NetworkManager(translationBaseUrl, translationApiKey);
                 _voice = new HybridVoiceManager(this, asrApiUrl, asrFallbackAfterConsecutiveFailures, asrPhraseEndSilenceSeconds);
 
                 WireEvents();
@@ -181,7 +194,7 @@ public class WizardOfOzClient : MonoBehaviour
         // Position it in front of camera
         if (_mainCam != null)
         {
-            Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.5f);
+            Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.2f);
             target += Vector3.down * 0.30f;
             _mainUIRoot.transform.position = target;
             _mainUIRoot.transform.LookAt(_mainCam.transform);
@@ -255,7 +268,7 @@ public class WizardOfOzClient : MonoBehaviour
 
         if (_mainUIRoot != null && _mainCam != null)
         {
-            Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.5f);
+            Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * 1.2f);
             target += Vector3.down * 0.30f;
             _mainUIRoot.transform.position = Vector3.Lerp(_mainUIRoot.transform.position, target, Time.deltaTime * 4.0f);
             _mainUIRoot.transform.LookAt(_mainCam.transform);
@@ -391,30 +404,82 @@ public class UIManager
 
 public class NetworkManager
 {
-    private string _ip; private int _p;
+    private readonly string _baseUrl;
+    private readonly string _apiKey;
     private DateTime _nextConnectionLogAllowedAt = DateTime.MinValue;
-    public NetworkManager(string ip, int p) { _ip = ip; _p = p; }
+
+    public NetworkManager(string baseUrl, string apiKey)
+    {
+        _baseUrl = baseUrl != null ? baseUrl.Trim().TrimEnd('/') : "";
+        _apiKey = apiKey != null ? apiKey.Trim() : "";
+    }
+
     public async void SendTranslationRequest(string text, Action<string> cb) {
-        if (string.IsNullOrWhiteSpace(_ip) || _p <= 0) {
+        if (string.IsNullOrWhiteSpace(_baseUrl) || string.IsNullOrWhiteSpace(text)) {
             cb?.Invoke(text);
             return;
         }
+
         try {
-            using (TcpClient c = new TcpClient()) {
-                await c.ConnectAsync(_ip, _p);
-                byte[] d = Encoding.UTF8.GetBytes(text);
-                await c.GetStream().WriteAsync(d, 0, d.Length);
-                byte[] b = new byte[1024];
-                int r = await c.GetStream().ReadAsync(b, 0, b.Length);
-                cb?.Invoke(Encoding.UTF8.GetString(b, 0, r));
+            using (var client = new HttpClient())
+            {
+                client.Timeout = TimeSpan.FromSeconds(70);
+                string url = _baseUrl + "/translate";
+                string translated = await TranslateOnce(client, url, text);
+                if (string.IsNullOrWhiteSpace(translated) || string.Equals(translated, text, StringComparison.Ordinal))
+                {
+                    // HF Spaces may cold-start; retry once.
+                    translated = await TranslateOnce(client, url, text);
+                }
+
+                cb?.Invoke(string.IsNullOrWhiteSpace(translated) ? text : translated);
             }
         } catch (Exception e) {
             if (DateTime.UtcNow >= _nextConnectionLogAllowedAt) {
-                Debug.LogWarning("[NetworkManager] Translation server unreachable at " + _ip + ":" + _p + ". Keeping ASR text. " + e.Message);
+                Debug.LogWarning("[NetworkManager] Translation server unreachable at " + _baseUrl + "/translate. Keeping ASR text. " + e.Message);
                 _nextConnectionLogAllowedAt = DateTime.UtcNow.AddSeconds(8);
             }
             cb?.Invoke(text);
         }
+    }
+
+    private static string EscapeJsonString(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "";
+        return raw.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    }
+
+    private static string ExtractTranslation(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return "";
+        Match m = Regex.Match(json, "\"translation\"\\s*:\\s*\"(?<v>(?:\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase);
+        if (!m.Success) return "";
+        return Regex.Unescape(m.Groups["v"].Value).Trim();
+    }
+
+    private async System.Threading.Tasks.Task<string> TranslateOnce(HttpClient client, string url, string text)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, url);
+        request.Content = new StringContent("{\"text\":\"" + EscapeJsonString(text) + "\"}", Encoding.UTF8, "application/json");
+        if (!string.IsNullOrWhiteSpace(_apiKey))
+        {
+            request.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
+        }
+
+        var resp = await client.SendAsync(request);
+        var body = await resp.Content.ReadAsStringAsync();
+        if (!resp.IsSuccessStatusCode)
+        {
+            if (DateTime.UtcNow >= _nextConnectionLogAllowedAt)
+            {
+                Debug.LogWarning("[NetworkManager] NMT translate failed HTTP " + (int)resp.StatusCode + " at " + url + ". " + body);
+                _nextConnectionLogAllowedAt = DateTime.UtcNow.AddSeconds(8);
+            }
+            return text;
+        }
+
+        string translated = ExtractTranslation(body);
+        return string.IsNullOrWhiteSpace(translated) ? text : translated;
     }
 }
 

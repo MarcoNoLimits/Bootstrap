@@ -5,10 +5,10 @@
         <ui:VisualElement name="main-content" class="row row-minimal">
             <!-- Vertical action rail: ASR, sign language, settings, plus ASR widgets -->
             <ui:VisualElement class="action-rail" name="action-rail">
-                <ui:Button name="btn-audio-toggle" text="Automatic Speech Recognition" class="action-rail-btn" tooltip="Start or stop speech recognition input" />
-                <ui:Button name="btn-slr-capture" text="Sign Language" class="action-rail-btn" tooltip="Sign language mode is active" />
-                <ui:Button name="btn-settings-rail" text="Settings" class="action-rail-btn action-rail-btn-outline action-rail-btn-last action-rail-btn-settings" tooltip="Open settings (placeholder)" />
-                <ui:Button name="btn-translation-toggle" text="Translation · Off" class="action-rail-btn action-rail-btn-outline" tooltip="Enable translation while ASR is active" />
+                <ui:Button name="btn-audio-toggle" text="Automatic Speech Recognition" class="action-rail-btn action-rail-btn-asr" tooltip="Start or stop speech recognition input" />
+                <ui:Button name="btn-translation-toggle" text="Translation · Off" class="action-rail-btn action-rail-btn-translation" tooltip="Enable translation while ASR is active" />
+                <ui:Button name="btn-slr-capture" text="Sign Language" class="action-rail-btn action-rail-btn-sign" tooltip="Sign language mode is active" />
+                <ui:Button name="btn-settings-rail" text="Settings" class="action-rail-btn action-rail-btn-settings" tooltip="Open settings (placeholder)" />
                 <ui:Label name="sign-inference-caption" class="sign-inference-caption" text="" />
                 <ui:Label name="xr-debug-hud" class="xr-debug-hud" text="" />
             </ui:VisualElement>

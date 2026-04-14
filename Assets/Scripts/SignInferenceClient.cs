@@ -31,8 +31,10 @@ public class InferResponse
 [DefaultExecutionOrder(-40)]
 public class SignInferenceClient : MonoBehaviour
 {
+    private const string DebugLogPath = "debug-729dee.log";
+    private const string DebugSessionId = "729dee";
     [Header("API")]
-    [Tooltip("If true, Awake sets the URL for this platform (Editor/PC: 127.0.0.1; UWP device: LAN IP). Turn off to use baseUrl from the inspector.")]
+    [Tooltip("If true, Awake sets the URL for this platform (Editor/PC: 127.0.0.1:8010; UWP device: LAN IP:8010). Turn off to use baseUrl from the inspector.")]
     [SerializeField] private bool usePlatformDefaultApiUrl = true;
     [Tooltip("Overridden at runtime when usePlatformDefaultApiUrl is true. HoloLens: use your PC Wi‑Fi IP if it changes.")]
     [SerializeField] private string baseUrl = "http://127.0.0.1:8010";
@@ -68,7 +70,7 @@ public class SignInferenceClient : MonoBehaviour
 
     [Header("Rate control")]
     [Tooltip("If false, sign capture stays idle until enabled from UI/code.")]
-    [SerializeField] private bool signCaptureActive = true;
+    [SerializeField] private bool signCaptureActive = false;
     [Tooltip("Inference requests per second, independent from camera FPS.")]
     [SerializeField] private float requestFps = 8f;
     [Tooltip("When enabled, sends the first inference request as soon as startup capture is ready.")]
@@ -145,6 +147,7 @@ public class SignInferenceClient : MonoBehaviour
     private Label _subtitleLabel;
     private Label _mainHudCaptionLabel;
     private string _inferCaptionLine = "";
+    private string _lastNetworkError = "";
     private bool _applicationIsQuitting;
 
     /// <summary>Same string as the on-screen sign caption (letter, spell text, hint). <see cref="XRDebugLogger"/> reads this for <c>xr-debug-hud</c> — never send/capture counters.</summary>
@@ -207,9 +210,42 @@ public class SignInferenceClient : MonoBehaviour
 #endif
     }
 
+    /// <summary>Sets the server root for <c>/infer</c> (no trailing slash). Stops platform presets from overriding this in the same session.</summary>
+    public void SetInferenceBaseUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return;
+        }
+
+        usePlatformDefaultApiUrl = false;
+        baseUrl = url.Trim().TrimEnd('/');
+    }
+
     private static void SetLiveCaptionForHud(string line)
     {
         LiveCaptionForHud = line ?? "";
+    }
+
+    private static void DebugWrite(string runId, string hypothesisId, string location, string message, string dataJson)
+    {
+        try
+        {
+            string line =
+                "{\"sessionId\":\"" + DebugSessionId + "\"," +
+                "\"runId\":\"" + runId + "\"," +
+                "\"hypothesisId\":\"" + hypothesisId + "\"," +
+                "\"location\":\"" + location.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"," +
+                "\"message\":\"" + message.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"," +
+                "\"data\":" + (string.IsNullOrEmpty(dataJson) ? "{}" : dataJson) + "," +
+                "\"timestamp\":" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture) +
+                "}\n";
+            File.AppendAllText(DebugLogPath, line);
+        }
+        catch
+        {
+            // Debug logging must never affect runtime behavior.
+        }
     }
 
     private void Start()
@@ -257,6 +293,18 @@ public class SignInferenceClient : MonoBehaviour
     {
         if (_applicationIsQuitting)
         {
+            return;
+        }
+
+        // Only drive sign caption/rendering when Sign mode is actually active.
+        // Prevents "Sign: waiting for API…" while ASR (or none) is selected.
+        if (App.CurrentInputMode != App.InputMode.Sign)
+        {
+            if (_mainHudCaptionLabel != null)
+            {
+                _mainHudCaptionLabel.text = "";
+            }
+            SetLiveCaptionForHud("");
             return;
         }
 
@@ -320,6 +368,14 @@ public class SignInferenceClient : MonoBehaviour
     {
         if (signCaptureActive == active) return;
         signCaptureActive = active;
+        #region agent log
+        DebugWrite(
+            "pre-fix",
+            "H1",
+            "SignInferenceClient.cs:SetSignCaptureActive",
+            "Sign capture toggled",
+            "{\"active\":" + (active ? "true" : "false") + ",\"mode\":\"" + App.CurrentInputMode.ToString() + "\"}");
+        #endregion
 
         if (signCaptureActive)
         {
@@ -896,6 +952,14 @@ public class SignInferenceClient : MonoBehaviour
         _requestInFlight = true;
 
         string url = TrimTrailingSlash(baseUrl) + "/infer";
+        #region agent log
+        DebugWrite(
+            "pre-fix",
+            "H2",
+            "SignInferenceClient.cs:PostInfer",
+            "Sending infer request",
+            "{\"url\":\"" + url.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\",\"bytes\":" + (jpegBytes != null ? jpegBytes.Length : 0).ToString(CultureInfo.InvariantCulture) + "}");
+        #endregion
         if (!_loggedFirstRequest)
         {
             _loggedFirstRequest = true;
@@ -949,16 +1013,35 @@ public class SignInferenceClient : MonoBehaviour
             {
                 string err = $"infer failed: {req.error}";
                 Debug.LogWarning("[SignInferenceClient] " + err);
+                _lastNetworkError = err;
+                #region agent log
+                DebugWrite(
+                    "pre-fix",
+                    "H3",
+                    "SignInferenceClient.cs:PostInfer",
+                    "Infer request failed",
+                    "{\"result\":\"" + req.result.ToString() + "\",\"error\":\"" + (req.error ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\",\"responseCode\":" + req.responseCode.ToString(CultureInfo.InvariantCulture) + "}");
+                #endregion
                 OnNetworkError?.Invoke(err);
             }
             else
             {
+                _lastNetworkError = "";
                 _sendSuccessCount++;
                 string json = req.downloadHandler.text;
+                #region agent log
+                DebugWrite(
+                    "pre-fix",
+                    "H4",
+                    "SignInferenceClient.cs:PostInfer",
+                    "Infer request succeeded",
+                    "{\"responseCode\":" + req.responseCode.ToString(CultureInfo.InvariantCulture) + ",\"jsonLength\":" + (json != null ? json.Length : 0).ToString(CultureInfo.InvariantCulture) + "}");
+                #endregion
                 if (!TryParseInferResponse(json, out InferResponse response, out string parseErr))
                 {
                     if (!string.IsNullOrEmpty(parseErr))
                     {
+                        _lastNetworkError = parseErr;
                         OnNetworkError?.Invoke(parseErr);
                     }
                 }
@@ -1019,23 +1102,27 @@ public class SignInferenceClient : MonoBehaviour
 
     private void ApplyCaptionToSubtitle()
     {
-        string caption;
+        string caption = "";
         if (!string.IsNullOrEmpty(_inferCaptionLine))
         {
             caption = _inferCaptionLine;
         }
-        else if (signCaptureActive && useWebCamTexture && !string.IsNullOrEmpty(_cameraUserMessage))
+        else if (!string.IsNullOrEmpty(_cameraUserMessage))
         {
             caption = _cameraUserMessage;
         }
-        else if (GetActiveSourceTexture() == null)
+        else if (!string.IsNullOrEmpty(_lastNetworkError))
         {
-            caption = "Sign: camera not ready — check permissions or HoloLens PV.";
+            caption = _lastNetworkError;
         }
-        else
-        {
-            caption = "Sign: waiting for API…";
-        }
+        #region agent log
+        DebugWrite(
+            "pre-fix",
+            "H5",
+            "SignInferenceClient.cs:ApplyCaptionToSubtitle",
+            "Caption resolved",
+            "{\"mode\":\"" + App.CurrentInputMode.ToString() + "\",\"signCaptureActive\":" + (signCaptureActive ? "true" : "false") + ",\"captionLen\":" + caption.Length.ToString(CultureInfo.InvariantCulture) + "}");
+        #endregion
 
         // Update every bound outlet (do not return early — main HUD caption must not be skipped when subtitle-text exists).
         if (statusHintText != null)

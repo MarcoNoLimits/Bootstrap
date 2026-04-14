@@ -8,12 +8,18 @@ public class WorldUIInputBridge : MonoBehaviour
     public UIDocument uiDoc;
     public RenderTexture renderTexture;
     public Collider targetCollider;
+    [SerializeField] private bool enableHoverDwellClick = true;
+    [SerializeField] private float hoverDwellSeconds = 0.16f;
+    [SerializeField] private float hoverClickCooldownSeconds = 0.25f;
 
     private XRRayInteractor _currentInteractor;
     private bool _isHovering;
 
     /// <summary>Last good UI position while hovering the quad — pinch sometimes clears 3D hit on the select frame.</summary>
     private Vector2? _lastHoverPanelPos;
+    private VisualElement _lastHoverTarget;
+    private float _hoverTargetSinceTime = -1f;
+    private float _lastHoverClickTime = -999f;
 
     // Triggered by XRSimpleInteractable
     public void OnSelectEntered(SelectEnterEventArgs args)
@@ -48,6 +54,8 @@ public class WorldUIInputBridge : MonoBehaviour
             _isHovering = false;
             _currentInteractor = null;
             _lastHoverPanelPos = null;
+            _lastHoverTarget = null;
+            _hoverTargetSinceTime = -1f;
         }
     }
 
@@ -67,8 +75,38 @@ public class WorldUIInputBridge : MonoBehaviour
                 Vector2 panelPos = HitToPanelPosition(hit);
                 _lastHoverPanelPos = panelPos;
                 MovePointer(panelPos);
+                MaybeHoverDwellClick(panelPos);
             }
         }
+    }
+
+    private void MaybeHoverDwellClick(Vector2 panelPos)
+    {
+        if (!enableHoverDwellClick || uiDoc == null || renderTexture == null) return;
+        if (Time.time < _lastHoverClickTime + hoverClickCooldownSeconds) return;
+
+        IPanel panel = uiDoc.rootVisualElement.panel;
+        if (panel == null) return;
+
+        VisualElement picked = panel.Pick(panelPos);
+        VisualElement target = ResolveClickableTarget(picked);
+        if (target == null) return;
+
+        if (!ReferenceEquals(target, _lastHoverTarget))
+        {
+            _lastHoverTarget = target;
+            _hoverTargetSinceTime = Time.time;
+            return;
+        }
+
+        if (_hoverTargetSinceTime < 0f || Time.time - _hoverTargetSinceTime < hoverDwellSeconds)
+        {
+            return;
+        }
+
+        ClickUIAtPanelPosition(panelPos);
+        _lastHoverClickTime = Time.time;
+        _hoverTargetSinceTime = Time.time;
     }
 
     private void MovePointer(Vector2 panelPos)

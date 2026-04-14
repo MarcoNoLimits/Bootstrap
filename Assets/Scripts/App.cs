@@ -1,4 +1,5 @@
 using System.Collections;
+using System.IO;
 using UnityEngine;
 using UnityEngine.UIElements;
 using UnityEngine.XR.Interaction.Toolkit;
@@ -6,7 +7,10 @@ using System.Collections.Generic;
 
 public class App : MonoBehaviour
 {
+    private const string DebugLogPath = "debug-729dee.log";
+    private const string DebugSessionId = "729dee";
     private const string DefaultAsrText = "Live speech appears here. Toggle translation to view Italian text.";
+    private const string SignInferenceBaseUrl = "http://127.0.0.1:8010";
     public enum InputMode { None, Asr, Sign }
     public static InputMode CurrentInputMode { get; private set; } = InputMode.None;
     public static bool IsTranslationEnabled { get; private set; }
@@ -14,10 +18,10 @@ public class App : MonoBehaviour
     private Camera _mainCam;
     
     [Header("World placement")]
-    [SerializeField] private float _distance = 1.5f;
+    [SerializeField] private float _distance = 1.1f;
     [SerializeField] private float _smoothSpeed = 4f;
     [Tooltip("Positive = right side of the view (camera +X).")]
-    [SerializeField] private float _rightOffsetMeters = 0.36f;
+    [SerializeField] private float _rightOffsetMeters = 0.18f;
     [Tooltip("Optional vertical nudge (camera +Y).")]
     [SerializeField] private float _verticalOffsetMeters = -0.05f;
     [Header("Scene Background")]
@@ -60,6 +64,7 @@ public class App : MonoBehaviour
         // Initial jump to front (so you don't have to wait for it to fly in)
         if (_mainCam != null)
         {
+            EnsureStereoBothEyes(_mainCam);
             _mainCam.clearFlags = CameraClearFlags.SolidColor;
             _mainCam.backgroundColor = _sceneBackgroundColor;
             UpdatePosition(true); // true = instant snap
@@ -73,6 +78,7 @@ public class App : MonoBehaviour
             _mainCam = ResolveMainCamera();
             if (_mainCam != null)
             {
+                EnsureStereoBothEyes(_mainCam);
                 _mainCam.clearFlags = CameraClearFlags.SolidColor;
                 _mainCam.backgroundColor = _sceneBackgroundColor;
             }
@@ -105,7 +111,7 @@ public class App : MonoBehaviour
         }
 
         // 3. Rotate to face camera (simple LookAt for Quad)
-        _mainUI.transform.LookAt(_mainCam.transform);
+        _mainUI.transform.LookAt(_mainCam.transform.position, Vector3.up);
         _mainUI.transform.Rotate(0, 180, 0); // Quads face backwards effectively
     }
 
@@ -190,8 +196,21 @@ public class App : MonoBehaviour
                 _audioOn = !_audioOn;
                 btnAudio.text = _audioOn ? "Automatic Speech Recognition · On" : "Automatic Speech Recognition";
                 btnAudio.EnableInClassList("action-rail-btn-on", _audioOn);
+                SetAsrCaptureActive(_audioOn);
+                if (_audioOn)
+                {
+                    // Translation should be enabled by default whenever ASR turns on.
+                    _translationOn = true;
+                }
+
                 CurrentInputMode = _audioOn ? InputMode.Asr : (_signOn ? InputMode.Sign : InputMode.None);
                 IsTranslationEnabled = _audioOn && _translationOn;
+
+                var signClient = FindObjectOfType<SignInferenceClient>();
+                if (_audioOn && signClient != null)
+                {
+                    signClient.SetSignCaptureActive(false);
+                }
 
                 if (_audioOn && _signOn)
                 {
@@ -202,13 +221,17 @@ public class App : MonoBehaviour
                         btnSign.text = "Sign Language";
                         btnSign.EnableInClassList("action-rail-btn-on", false);
                     }
-                    var signClient = FindObjectOfType<SignInferenceClient>();
                     if (signClient != null) signClient.SetSignCaptureActive(false);
                 }
 
                 if (_translationToggleBtn != null)
                 {
                     _translationToggleBtn.style.display = _audioOn ? DisplayStyle.Flex : DisplayStyle.None;
+                    if (_audioOn)
+                    {
+                        _translationToggleBtn.text = "Translation · On";
+                        _translationToggleBtn.EnableInClassList("action-rail-btn-on", true);
+                    }
                     if (!_audioOn)
                     {
                         _translationOn = false;
@@ -227,6 +250,23 @@ public class App : MonoBehaviour
             btnSlr.text = "Sign Language";
             btnSlr.clicked += () =>
             {
+                #region agent log
+                try
+                {
+                    string json =
+                        "{\"sessionId\":\"" + DebugSessionId + "\"," +
+                        "\"runId\":\"pre-fix\"," +
+                        "\"hypothesisId\":\"H1\"," +
+                        "\"location\":\"App.cs:btn-slr-capture\"," +
+                        "\"message\":\"Sign button clicked\"," +
+                        "\"data\":{\"beforeSignOn\":" + (_signOn ? "true" : "false") + ",\"mode\":\"" + CurrentInputMode.ToString() + "\"}," +
+                        "\"timestamp\":" + System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString() + "}\n";
+                    File.AppendAllText(
+                        DebugLogPath,
+                        json);
+                }
+                catch { }
+                #endregion
                 _signOn = !_signOn;
                 btnSlr.text = _signOn ? "Sign Language · On" : "Sign Language";
                 btnSlr.EnableInClassList("action-rail-btn-on", _signOn);
@@ -238,6 +278,7 @@ public class App : MonoBehaviour
                     _audioOn = false;
                     btnAudio.text = "Automatic Speech Recognition";
                     btnAudio.EnableInClassList("action-rail-btn-on", false);
+                    SetAsrCaptureActive(false);
                     if (_translationToggleBtn != null)
                     {
                         _translationOn = false;
@@ -251,6 +292,11 @@ public class App : MonoBehaviour
                 var signClient = FindObjectOfType<SignInferenceClient>();
                 if (signClient != null)
                 {
+                    if (_signOn)
+                    {
+                        signClient.SetInferenceBaseUrl(SignInferenceBaseUrl);
+                    }
+
                     signClient.SetSignCaptureActive(_signOn);
                 }
             };
@@ -284,11 +330,10 @@ public class App : MonoBehaviour
         if (debugHudLabel != null)
         {
             debugHudLabel.pickingMode = PickingMode.Ignore;
-            var logger = _mainUI.AddComponent<XRDebugLogger>();
-            logger.statusLabel = debugHudLabel;
+            debugHudLabel.style.display = DisplayStyle.None;
         }
 
-        ActivateSignByDefaultForTesting();
+        InitializeDefaultMode();
     }
 
     /// <summary>HoloLens/XR: prefer MainCamera; fallback to any enabled camera so world UI still parents correctly.</summary>
@@ -308,6 +353,15 @@ public class App : MonoBehaviour
         return null;
     }
 
+    private static void EnsureStereoBothEyes(Camera cam)
+    {
+        if (cam == null) return;
+        if (cam.stereoTargetEye != StereoTargetEyeMask.Both)
+        {
+            cam.stereoTargetEye = StereoTargetEyeMask.Both;
+        }
+    }
+
     private IEnumerator FlashButtonLabel(Button btn, string defaultText, string flashText, string flashClass, float seconds)
     {
         btn.EnableInClassList(flashClass, true);
@@ -317,12 +371,12 @@ public class App : MonoBehaviour
         btn.text = defaultText;
     }
 
-    private void ActivateSignByDefaultForTesting()
+    private void InitializeDefaultMode()
     {
         _audioOn = false;
         _translationOn = false;
-        _signOn = true;
-        CurrentInputMode = InputMode.Sign;
+        _signOn = false;
+        CurrentInputMode = InputMode.None;
         IsTranslationEnabled = false;
 
         if (_asrToggleBtn != null)
@@ -333,8 +387,8 @@ public class App : MonoBehaviour
 
         if (_signToggleBtn != null)
         {
-            _signToggleBtn.text = "Sign Language · On";
-            _signToggleBtn.EnableInClassList("action-rail-btn-on", true);
+            _signToggleBtn.text = "Sign Language";
+            _signToggleBtn.EnableInClassList("action-rail-btn-on", false);
         }
 
         if (_translationToggleBtn != null)
@@ -347,7 +401,28 @@ public class App : MonoBehaviour
         var signClient = FindObjectOfType<SignInferenceClient>();
         if (signClient != null)
         {
-            signClient.SetSignCaptureActive(true);
+            signClient.SetInferenceBaseUrl(SignInferenceBaseUrl);
+            signClient.SetSignCaptureActive(false);
+        }
+
+        SetAsrCaptureActive(false);
+    }
+
+    private static void SetAsrCaptureActive(bool active)
+    {
+        var asr = HololensAsrManager.Instance;
+        if (asr == null)
+        {
+            return;
+        }
+
+        if (active)
+        {
+            asr.StartAsr();
+        }
+        else
+        {
+            asr.StopAsr();
         }
     }
 }
