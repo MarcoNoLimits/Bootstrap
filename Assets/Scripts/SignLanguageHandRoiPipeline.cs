@@ -45,13 +45,16 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
     [Header("Hand selection")]
     [SerializeField] private SignDominantHandPolicy dominantPolicy = SignDominantHandPolicy.PreferRight;
 
-    [Header("ROI")]
-    [Tooltip("Pad as a fraction of max(width, height), clamped by min padding.")]
-    [SerializeField, Range(0.05f, 0.35f)] private float padFraction = 0.12f;
-
-    [SerializeField] private int minPadPixels = 20;
-
+    [Header("ROI Config (Stage 1)")]
+    [Tooltip("Padding added to all bbox sides. Matches contract baseline behavior (pad=40).")]
+    [SerializeField] private int paddingPixels = 40;
+    [Tooltip("Minimum width/height in pixels. Smaller boxes are invalid.")]
     [SerializeField] private int minRoiDimensionPixels = 32;
+    [Tooltip("Minimum hand area as a fraction of frame area.")]
+    [SerializeField, Range(0f, 1f)] private float minHandAreaFraction = 0.01f;
+    [Tooltip("When enabled, smooths ROI corners frame-to-frame to reduce jitter.")]
+    [SerializeField] private bool smoothRoi = true;
+    [SerializeField, Range(0.01f, 1f)] private float roiSmoothing = 0.35f;
 
     private XRHandSubsystem _handSubsystem;
 
@@ -60,6 +63,11 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
 
     /// <summary>True when the last <see cref="TryGetHandRoiInPvPixels"/> had a tracked hand and valid ROI.</summary>
     public bool LastHadValidRoi { get; private set; }
+    public bool LastRoiValid { get; private set; }
+    public float LastAreaFraction { get; private set; }
+    public string LastInvalidReason { get; private set; } = "";
+    private Rect _smoothedRoi;
+    private bool _hasSmoothedRoi;
 
     private void Awake()
     {
@@ -105,21 +113,27 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
         roi = default;
         handTracked = false;
         LastHadValidRoi = false;
+        LastRoiValid = false;
+        LastAreaFraction = 0f;
+        LastInvalidReason = "";
 
         if (locatableCamera == null || xrOrigin == null)
         {
+            LastInvalidReason = "missing_references";
             return false;
         }
 
         TryAcquireHandSubsystem();
         if (_handSubsystem == null)
         {
+            LastInvalidReason = "no_hand_subsystem";
             return false;
         }
 
         if (!TryPickHand(out XRHand hand))
         {
             handTracked = false;
+            LastInvalidReason = "hand_not_tracked";
             return false;
         }
 
@@ -132,11 +146,13 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
             XRHandJoint joint = hand.GetJoint(s_RoiJoints[i]);
             if (!IsJointUsable(joint))
             {
+                LastInvalidReason = "joint_not_usable";
                 return false;
             }
 
             if (!joint.TryGetPose(out Pose localPose))
             {
+                LastInvalidReason = "joint_pose_missing";
                 return false;
             }
 
@@ -153,6 +169,7 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
         {
             if (!locatableCamera.TryWorldToTexturePixel(worldPoints[i], w, h, out Vector2 uv))
             {
+                LastInvalidReason = "projection_failed";
                 return false;
             }
 
@@ -167,9 +184,9 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
         int ix1 = Mathf.CeilToInt(maxU);
         int iy1 = Mathf.CeilToInt(maxV);
 
-        int boxW = Mathf.Max(1, ix1 - ix0);
-        int boxH = Mathf.Max(1, iy1 - iy0);
-        int pad = Mathf.Max(minPadPixels, Mathf.RoundToInt(Mathf.Max(boxW, boxH) * padFraction));
+        int boxW = Mathf.Max(1, ix1 - ix0 + 1);
+        int boxH = Mathf.Max(1, iy1 - iy0 + 1);
+        int pad = Mathf.Max(0, paddingPixels);
 
         int rx0 = ix0 - pad;
         int ry0 = iy0 - pad;
@@ -182,13 +199,29 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
         int ry1 = Mathf.Clamp(ry0 + rh - 1, 0, h - 1);
 
         roi = new RectInt(rx0, ry0, Mathf.Max(1, rx1 - rx0 + 1), Mathf.Max(1, ry1 - ry0 + 1));
+        if (smoothRoi)
+        {
+            roi = SmoothRoi(roi);
+        }
+
+        LastAreaFraction = (roi.width * roi.height) / Mathf.Max(1f, w * h);
+
         if (roi.width < minRoiDimensionPixels || roi.height < minRoiDimensionPixels)
         {
+            LastInvalidReason = "roi_too_small";
+            _hasSmoothedRoi = false;
+            return false;
+        }
+        if (LastAreaFraction < minHandAreaFraction)
+        {
+            LastInvalidReason = "area_fraction_too_small";
+            _hasSmoothedRoi = false;
             return false;
         }
 
         LastRoi = roi;
         LastHadValidRoi = true;
+        LastRoiValid = true;
         return true;
     }
 
@@ -218,6 +251,30 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
     private static bool IsJointUsable(XRHandJoint joint)
     {
         return joint.trackingState.HasFlag(XRHandJointTrackingState.Pose);
+    }
+
+    private RectInt SmoothRoi(RectInt raw)
+    {
+        Rect current = new Rect(raw.x, raw.y, raw.width, raw.height);
+        if (!_hasSmoothedRoi)
+        {
+            _smoothedRoi = current;
+            _hasSmoothedRoi = true;
+        }
+        else
+        {
+            float t = Mathf.Clamp01(roiSmoothing);
+            _smoothedRoi.x = Mathf.Lerp(_smoothedRoi.x, current.x, t);
+            _smoothedRoi.y = Mathf.Lerp(_smoothedRoi.y, current.y, t);
+            _smoothedRoi.width = Mathf.Lerp(_smoothedRoi.width, current.width, t);
+            _smoothedRoi.height = Mathf.Lerp(_smoothedRoi.height, current.height, t);
+        }
+
+        return new RectInt(
+            Mathf.RoundToInt(_smoothedRoi.x),
+            Mathf.RoundToInt(_smoothedRoi.y),
+            Mathf.Max(1, Mathf.RoundToInt(_smoothedRoi.width)),
+            Mathf.Max(1, Mathf.RoundToInt(_smoothedRoi.height)));
     }
 
     private bool TryPickHand(out XRHand hand)

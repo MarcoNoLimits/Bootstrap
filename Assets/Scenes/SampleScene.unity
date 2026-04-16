@@ -920,6 +920,9 @@ GameObject:
   - component: {fileID: 1062420787}
   - component: {fileID: 1062420786}
   - component: {fileID: 1062420790}
+  - component: {fileID: 1062420791}
+  - component: {fileID: 1062420792}
+  - component: {fileID: 1062420793}
   m_Layer: 0
   m_Name: '[BOOTSTRAP]'
   m_TagString: Untagged
@@ -970,6 +973,63 @@ MonoBehaviour:
   _streamWidth: 960
   _jpegQuality: 75
   _captureInterval: 0.03333334
+--- !u!114 &1062420791
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1062420785}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f81bd0aebe03642439cd88dd2d475879, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  xrOrigin: {fileID: 1065435640}
+  locatableCamera: {fileID: 1593357426}
+  dominantPolicy: 0
+  paddingPixels: 40
+  minRoiDimensionPixels: 32
+  minHandAreaFraction: 0.01
+  smoothRoi: 1
+  roiSmoothing: 0.35
+--- !u!114 &1062420792
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1062420785}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ac0b5b47f5da26b43a7b629dda7424b4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  pipeline: {fileID: 1062420791}
+  debugDraw: 1
+  borderColor: {r: 0.2, g: 1, b: 0.35, a: 0.95}
+  previewWidth: 0
+  previewHeight: 0
+--- !u!114 &1062420793
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1062420785}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bfac12fd8b7b47e99b43e247c59f5d4d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  pipeline: {fileID: 1062420791}
+  overrideSource: {fileID: 0}
+  useWebCamTexture: 1
+  requestWidth: 896
+  requestHeight: 504
+  requestFps: 30
+  logRoiMetrics: 1
+  logEveryNFrames: 15
 --- !u!1 &1065435638
 GameObject:
   m_ObjectHideFlags: 0
@@ -1202,6 +1262,7 @@ GameObject:
   - component: {fileID: 1593357425}
   - component: {fileID: 1593357424}
   - component: {fileID: 1593357423}
+  - component: {fileID: 1593357426}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -1392,6 +1453,22 @@ Camera:
   m_OcclusionCulling: 1
   m_StereoConvergence: 10
   m_StereoSeparation: 0.022
+--- !u!114 &1593357426
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1593357421}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 77b3326415bcaa74583f13985e9e17fc, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _arCameraManager: {fileID: 0}
+  _camera: {fileID: 1593357425}
+  flipImageY: 1
+  mirrorImageX: 0
 --- !u!1 &1807992338
 GameObject:
   m_ObjectHideFlags: 0

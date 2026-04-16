@@ -40,6 +40,11 @@ public class LocatableCameraArProjection : MonoBehaviour
         if (_arCameraManager == null)
         {
             _arCameraManager = GetComponent<ARCameraManager>();
+            if (_arCameraManager == null)
+            {
+                _arCameraManager = gameObject.AddComponent<ARCameraManager>();
+                Debug.Log("[LocatableCameraArProjection] Added missing ARCameraManager on camera.");
+            }
         }
 
         if (_camera == null)
