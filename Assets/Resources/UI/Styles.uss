@@ -227,6 +227,18 @@
     -unity-background-image-tint-color: white;
 }
 
+.rail-volume-icon {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    width: 86px;
+    height: 28px;
+    margin-top: 6px;
+    margin-bottom: 4px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
 .signlanguage-accent-icon {
     position: absolute;
     right: 16px;
