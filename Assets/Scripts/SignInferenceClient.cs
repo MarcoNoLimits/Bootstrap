@@ -17,22 +17,26 @@ public class InferResponse
     public string text;
     public string status_hint;
     public string model;
+    /// <summary>When true, server detected no hand.</summary>
+    public bool no_hand;
 }
 
 /// <summary>
 /// HoloLens inference client:
-/// - Captures camera frames (WebCamTexture) or an override Texture source
-/// - Crops ROI on-device: optional hand ROI (OpenXR hands + AR Foundation PV projection) or center crop
-/// - Resizes to 224x224
-/// - JPEG-encodes and POSTs multipart form-data to /predict (field name <c>img</c>; filename <c>hand.jpg</c> in hand ROI mode)
-/// - Parses JSON and updates UI with debounce/confidence threshold
-/// - Exposes optional spell endpoint methods for UI buttons
+/// - Primary path: PV via <c>XRCpuImage</c> → JPEG → POST raw bytes to Health <c>/predict_hand</c> (<c>Content-Type: image/jpeg</c>).
+/// - Legacy: WebCamTexture / HF Gradio Space / on-device hand ROI modes.
+/// - Parses JSON (<c>predicted_letter</c>, <c>confidence</c>, <c>no_hand</c>) and updates UI.
 /// </summary>
 [DefaultExecutionOrder(-40)]
 public class SignInferenceClient : MonoBehaviour
 {
-    private const string DebugLogPath = "debug-729dee.log";
     private const string DebugSessionId = "729dee";
+
+    /// <summary>Agent file log (NDJSON). Off on device — file I/O here caused noisy WinRT traces and is not needed for shipping.</summary>
+    private const bool AgentDebugFileLog = false;
+
+    private static string DebugLogPath =>
+        Path.Combine(Application.persistentDataPath, "debug-729dee.log");
     [Header("API")]
     [Tooltip("If true, Awake sets the Hugging Face Space runtime URL for this platform. Turn off to use baseUrl from the inspector.")]
     [SerializeField] private bool usePlatformDefaultApiUrl = true;
@@ -41,6 +45,21 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private bool spell = false;
     [SerializeField] private string sessionId = "";
     [SerializeField] private float requestTimeoutSeconds = 15f;
+
+    [Header("PV CPU image pipeline (Health server)")]
+    [Tooltip("Use AR Foundation XRCpuImage for HoloLens PV — no WebCamTexture; POST raw JPEG to Health predict_hand.")]
+    [SerializeField] private bool useXrCpuImagePipeline = true;
+    [SerializeField] private HololensPvCpuImageSource pvCpuImageSource;
+    [Tooltip("Path on baseUrl for raw JPEG POST (default /predict_hand). Test server: GET /health, POST /predict_hand with image/jpeg.")]
+    [SerializeField] private string inferEndpointPath = "/predict_hand";
+    [Tooltip("Minimum time between send attempts in ms (150–200 ≈ 5–6 FPS). Used when CPU pipeline is on.")]
+    [SerializeField] private float minSendIntervalMs = 175f;
+    [Tooltip("Max width after resize/crop (default 640). Synced to HololensPvCpuImageSource on Start.")]
+    [SerializeField] private int maxSendFrameWidth = 640;
+    [Tooltip("Crop center region before resize (see HololensPvCpuImageSource).")]
+    [SerializeField] private bool cpuPipelineCropCenter;
+    [Tooltip("Fraction of min(w,h) when cropping center (CPU pipeline).")]
+    [SerializeField, Range(0.2f, 1f)] private float cpuPipelineCenterCropFraction = 0.92f;
 
     [Header("Capture")]
     [Tooltip("If enabled and available, uses WebCamTexture (PV camera) as source.")]
@@ -65,10 +84,14 @@ public class SignInferenceClient : MonoBehaviour
     [Tooltip("Use OpenXR hand joints + AR Foundation locatable-camera projection (see SignLanguageHandRoiPipeline). When off, uses center crop.")]
     [SerializeField] private bool useHandRoiInference;
     [SerializeField] private SignLanguageHandRoiPipeline handRoiPipeline;
-    [Tooltip("Multipart filename for /infer when hand ROI is used (spec: hand.jpg).")]
+    [Tooltip("Multipart filename when hand ROI + HF multipart path is used (spec: hand.jpg).")]
     [SerializeField] private string handRoiMultipartFileName = "hand.jpg";
 
     [Header("Rate control")]
+    [Tooltip("Stage 1 test mode: never send network inference requests (ROI/debug only).")]
+    [SerializeField] private bool stage1Only = false;
+    [Tooltip("Convenience mode for testing Stage A+B together with recommended defaults.")]
+    [SerializeField] private bool combinedABMode = true;
     [Tooltip("If false, sign capture stays idle until enabled from UI/code.")]
     [SerializeField] private bool signCaptureActive = false;
     [Tooltip("Inference requests per second, independent from camera FPS.")]
@@ -79,6 +102,8 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private bool dropIfRequestInFlight = true;
     [Tooltip("Only attempt inference every Nth update tick (1 = every tick).")]
     [SerializeField] private int sendEveryNthFrame = 1;
+    [Tooltip("Write cadence/latency/drop logs every N send attempts.")]
+    [SerializeField] private int logEveryNSendAttempts = 20;
 
     [Header("Optional change gating")]
     [Tooltip("If enabled, skips sending when ROI is very similar to last sent ROI.")]
@@ -106,11 +131,15 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private bool useServerTextAsAuthoritative = true;
 
     [Header("Debug")]
+    [Tooltip("CPU pipeline: log frame bytes, round-trip ms, detection vs no_hand, HTTP ok/fail, send FPS (see logEveryNSendAttempts for summaries).")]
+    [SerializeField] private bool logCpuPipelineDebug = true;
+    [Tooltip("If true, logs every raw predict_hand request. If false, only periodic summaries + errors.")]
+    [SerializeField] private bool logEveryCpuPipelineRequest = false;
     [Tooltip("If enabled, saves occasional captured ROI JPGs to persistentDataPath/sign_debug.")]
     [SerializeField] private bool saveDebugFrames = false;
     [Tooltip("Save one debug frame every N send attempts.")]
     [SerializeField] private int saveEveryNSends = 20;
-    [Tooltip("If enabled, saves the first sent inference JPEGs exactly as posted to /infer.")]
+    [Tooltip("If enabled, saves the first sent inference JPEGs exactly as posted to predict_hand.")]
     [SerializeField] private bool saveFirstSentFrames = true;
     [Tooltip("How many sent inference frames to save for visual inspection.")]
     [SerializeField] private int saveFirstSentFramesCount = 30;
@@ -136,10 +165,28 @@ public class SignInferenceClient : MonoBehaviour
     private int _sendAttemptCount;
     private int _sendSuccessCount;
     private int _skippedHandRoiFrames;
+    private int _droppedInFlightFrames;
+    private int _droppedInvalidFrameCount;
     private int _handRoiLogCounter;
+    private int _roiInvalidStatusCounter;
     private bool _warnedMissingHandPipeline;
     private string _lastMultipartFileName = "frame.jpg";
     private float _lastSendAt = -1f;
+    // CPU pipeline (Health /predict_hand) debug aggregates
+    private int _cpuPipeHttpOk;
+    private int _cpuPipeHttpFail;
+    private int _cpuPipeHandDetected;
+    private int _cpuPipeNoHand;
+    private int _cpuPipeParseFail;
+    private long _cpuPipeTotalJpegBytes;
+    private int _cpuPipeRoundTripSamples;
+    private double _cpuPipeTotalRoundTripMs;
+    private double _cpuPipeTotalServerProcMs;
+    private int _cpuPipeServerProcSamples;
+    private float _cpuPipeFirstCompletedRt = -1f;
+    private float _cpuPipeLastCompletedRt = -1f;
+    private int _cpuPipeCompletedSinceLastSummary;
+    private float _cpuPipeSummaryWindowStartRt = -1f;
     private string _debugFrameDir;
     private string _sentFramesDir;
     private int _savedSentFramesCount;
@@ -172,6 +219,29 @@ public class SignInferenceClient : MonoBehaviour
 
     private void Awake()
     {
+        if (combinedABMode)
+        {
+            ApplyCombinedAbDefaults();
+        }
+
+#if UNITY_WSA && !UNITY_EDITOR
+        // On-device, WebCamTexture can preempt PV and prevent locatable-camera startup.
+        // Force it off so AR/OpenXR camera paths can initialize intrinsics.
+        if (useWebCamTexture || useXrCpuImagePipeline)
+        {
+            useWebCamTexture = false;
+            Debug.Log("[SignInferenceClient] WebCamTexture disabled on UWP (use XRCpuImage pipeline or intrinsics).");
+        }
+#endif
+
+        if (useXrCpuImagePipeline)
+        {
+            useWebCamTexture = false;
+        }
+
+        minSendIntervalMs = Mathf.Clamp(minSendIntervalMs, 50f, 2000f);
+        maxSendFrameWidth = Mathf.Clamp(maxSendFrameWidth, 160, 1920);
+
         if (usePlatformDefaultApiUrl)
         {
             ApplyPlatformDefaultBaseUrl();
@@ -193,14 +263,39 @@ public class SignInferenceClient : MonoBehaviour
         saveFirstSentFramesCount = Mathf.Max(0, saveFirstSentFramesCount);
         webCamStartMaxAttempts = Mathf.Max(1, webCamStartMaxAttempts);
         webCamRetryDelaySeconds = Mathf.Max(0.25f, webCamRetryDelaySeconds);
+        logEveryNSendAttempts = Mathf.Max(1, logEveryNSendAttempts);
 
         _roiTexture = new Texture2D(targetSize, targetSize, TextureFormat.RGB24, false);
         _debugFrameDir = Path.Combine(Application.persistentDataPath, "sign_debug");
         _sentFramesDir = ResolveSentFramesDirectory();
     }
 
+    private void ApplyCombinedAbDefaults()
+    {
+        // Low-latency Python path: PV CPU image + raw JPEG + throttling (no XR hand ROI).
+        stage1Only = false;
+        useXrCpuImagePipeline = true;
+        useHandRoiInference = false;
+        useWebCamTexture = false;
+        minSendIntervalMs = 175f;
+        requestFps = 5f;
+        dropIfRequestInFlight = true;
+        jpegQuality = 88;
+        maxSendFrameWidth = 640;
+        inferEndpointPath = "/predict_hand";
+        confidenceThreshold = 0.55f;
+        uiDebounceSeconds = 0.12f;
+    }
+
     private void ApplyPlatformDefaultBaseUrl()
     {
+        if (useXrCpuImagePipeline)
+        {
+            // Health hand pipeline on dev machine or LAN — HoloLens: use http://<PC_IP>:8000
+            baseUrl = "http://127.0.0.1:8000";
+            return;
+        }
+
 #if UNITY_EDITOR
         baseUrl = "https://mederbekaiana-sign-language.hf.space";
 #elif UNITY_WSA && !UNITY_EDITOR
@@ -229,6 +324,11 @@ public class SignInferenceClient : MonoBehaviour
 
     private static void DebugWrite(string runId, string hypothesisId, string location, string message, string dataJson)
     {
+        if (!AgentDebugFileLog)
+        {
+            return;
+        }
+
         try
         {
             string line =
@@ -255,7 +355,30 @@ public class SignInferenceClient : MonoBehaviour
             StartCoroutine(BindToolkitCaptionLabelsWhenReady());
         }
 
-        if (signCaptureActive && useWebCamTexture)
+        if (useXrCpuImagePipeline)
+        {
+            if (pvCpuImageSource == null)
+            {
+                pvCpuImageSource = FindObjectOfType<HololensPvCpuImageSource>();
+            }
+
+            if (pvCpuImageSource != null)
+            {
+                pvCpuImageSource.SetEncodingOptions(
+                    maxSendFrameWidth,
+                    cpuPipelineCropCenter,
+                    cpuPipelineCenterCropFraction,
+                    jpegQuality,
+                    true);
+            }
+            else
+            {
+                Debug.LogWarning(
+                    "[SignInferenceClient] useXrCpuImagePipeline is on but no HololensPvCpuImageSource found. Add it to the PV/AR camera object.");
+            }
+        }
+
+        if (signCaptureActive && useWebCamTexture && !useXrCpuImagePipeline)
         {
             RequestWebCamStart();
         }
@@ -273,7 +396,7 @@ public class SignInferenceClient : MonoBehaviour
             return;
         }
 
-        if (signCaptureActive && useWebCamTexture)
+        if (signCaptureActive && useWebCamTexture && !useXrCpuImagePipeline)
         {
             RequestWebCamStart();
         }
@@ -335,10 +458,14 @@ public class SignInferenceClient : MonoBehaviour
             return;
         }
 
-        _nextRequestAt = Time.time + (1f / requestFps);
+        float intervalSec = useXrCpuImagePipeline && minSendIntervalMs > 0f
+            ? minSendIntervalMs * 0.001f
+            : (1f / requestFps);
+        _nextRequestAt = Time.time + intervalSec;
 
         if (_requestInFlight && dropIfRequestInFlight)
         {
+            _droppedInFlightFrames++;
             return;
         }
 
@@ -348,9 +475,16 @@ public class SignInferenceClient : MonoBehaviour
             return;
         }
 
+        if (useXrCpuImagePipeline)
+        {
+            RunCpuImagePipelineLoopTick();
+            return;
+        }
+
         Texture src = GetActiveSourceTexture();
         if (src == null)
         {
+            _inferCaptionLine = "Sign: waiting for camera frame...";
             return;
         }
 
@@ -358,9 +492,33 @@ public class SignInferenceClient : MonoBehaviour
 
         if (!TryBuildJpegForInference(src, out byte[] jpegBytes))
         {
+            _droppedInvalidFrameCount++;
             return;
         }
 
+        QueueInference(jpegBytes, "loop");
+    }
+
+    private void RunCpuImagePipelineLoopTick()
+    {
+        if (pvCpuImageSource == null)
+        {
+            pvCpuImageSource = FindObjectOfType<HololensPvCpuImageSource>();
+        }
+
+        if (pvCpuImageSource == null)
+        {
+            _inferCaptionLine = "Sign: add HololensPvCpuImageSource + ARCameraManager";
+            return;
+        }
+
+        if (!pvCpuImageSource.TryGetJpegFrame(out byte[] jpegBytes, out string err))
+        {
+            _inferCaptionLine = string.IsNullOrEmpty(err) ? "Sign: waiting for camera frame..." : $"Sign: {err}";
+            return;
+        }
+
+        _captureFrameCount++;
         QueueInference(jpegBytes, "loop");
     }
 
@@ -379,10 +537,11 @@ public class SignInferenceClient : MonoBehaviour
 
         if (signCaptureActive)
         {
-            if (useWebCamTexture)
+            if (useWebCamTexture && !useXrCpuImagePipeline)
             {
                 RequestWebCamStart();
             }
+
             if (startCapturingOnLaunch)
             {
                 StartCoroutine(BeginCaptureOnLaunch());
@@ -603,6 +762,15 @@ public class SignInferenceClient : MonoBehaviour
 
     private IEnumerator BeginCaptureOnLaunch()
     {
+        if (useXrCpuImagePipeline)
+        {
+            yield return null;
+            _nextRequestAt = 0f;
+            _frameTickCounter = Mathf.Max(0, sendEveryNthFrame - 1);
+            TryQueueInferenceNow();
+            yield break;
+        }
+
         if (useWebCamTexture && hololensCameraOnly && !IsCameraAllowedForCurrentRuntime() && overrideSource == null)
         {
             Debug.LogWarning("[SignInferenceClient] Waiting for HoloLens PV camera. Run this on-device to start sign capture.");
@@ -636,6 +804,23 @@ public class SignInferenceClient : MonoBehaviour
     {
         if (_requestInFlight && dropIfRequestInFlight)
         {
+            _droppedInFlightFrames++;
+            return;
+        }
+
+        if (useXrCpuImagePipeline)
+        {
+            if (pvCpuImageSource == null)
+            {
+                pvCpuImageSource = FindObjectOfType<HololensPvCpuImageSource>();
+            }
+
+            if (pvCpuImageSource == null || !pvCpuImageSource.TryGetJpegFrame(out byte[] jCpu, out _))
+            {
+                return;
+            }
+
+            QueueInference(jCpu, "launch");
             return;
         }
 
@@ -647,6 +832,7 @@ public class SignInferenceClient : MonoBehaviour
 
         if (!TryBuildJpegForInference(src, out byte[] jpegBytes))
         {
+            _droppedInvalidFrameCount++;
             return;
         }
 
@@ -663,6 +849,27 @@ public class SignInferenceClient : MonoBehaviour
         MaybeSaveDebugFrame(jpegBytes, tag);
         MaybeSaveFirstSentFrame(jpegBytes, tag);
         MaybeLogHandRoiStats(jpegBytes);
+        if (stage1Only)
+        {
+            if ((_sendAttemptCount % 30) == 0)
+            {
+                Debug.Log("[SignInferenceClient] Stage1Only enabled: inference API call skipped.");
+            }
+            return;
+        }
+
+        if ((_sendAttemptCount % logEveryNSendAttempts) == 0)
+        {
+            Debug.Log(
+                $"[SignInferenceClient] cadence sendAttempts={_sendAttemptCount} success={_sendSuccessCount} droppedInFlight={_droppedInFlightFrames} droppedInvalid={_droppedInvalidFrameCount} skippedRoi={_skippedHandRoiFrames}");
+        }
+
+        if (useXrCpuImagePipeline)
+        {
+            StartCoroutine(PostInferRawJpeg(jpegBytes));
+            return;
+        }
+
         StartCoroutine(PostInfer(jpegBytes));
     }
 
@@ -718,13 +925,33 @@ public class SignInferenceClient : MonoBehaviour
         if (!handRoiPipeline.TryGetHandRoiInPvPixels(out RectInt roi, out _))
         {
             _skippedHandRoiFrames++;
+            _roiInvalidStatusCounter++;
+            if ((_roiInvalidStatusCounter % 10) == 0)
+            {
+                string reason = string.IsNullOrEmpty(handRoiPipeline.LastInvalidReason)
+                    ? "unknown"
+                    : handRoiPipeline.LastInvalidReason;
+                // When intrinsics are not ready, also show the camera subsystem state for diagnosis.
+                if (reason.StartsWith("intrinsics_not_ready") && handRoiPipeline.LocatableCamera != null)
+                {
+                    string camStatus = handRoiPipeline.LocatableCamera.CameraStatusLine;
+                    _inferCaptionLine = $"Sign: {camStatus}";
+                }
+                else
+                {
+                    _inferCaptionLine = $"Sign: hand ROI invalid ({reason})";
+                }
+            }
             return false;
         }
+
+        _roiInvalidStatusCounter = 0;
 
         int rw = roi.width;
         int rh = roi.height;
         if (rw <= 0 || rh <= 0)
         {
+            _inferCaptionLine = "Sign: hand ROI invalid (empty bbox)";
             return false;
         }
 
@@ -947,9 +1174,235 @@ public class SignInferenceClient : MonoBehaviour
         return dst;
     }
 
+    /// <summary>
+    /// Health hand pipeline: raw JPEG body, <c>Content-Type: image/jpeg</c>, JSON with predicted_letter / confidence / no_hand.
+    /// </summary>
+    private IEnumerator PostInferRawJpeg(byte[] jpegBytes)
+    {
+        _requestInFlight = true;
+        float startedAt = Time.realtimeSinceStartup;
+        int jpegLen = jpegBytes?.Length ?? 0;
+        string path = string.IsNullOrEmpty(inferEndpointPath) ? "/predict_hand" : inferEndpointPath;
+        if (!path.StartsWith("/", StringComparison.Ordinal))
+        {
+            path = "/" + path;
+        }
+
+        string url = TrimTrailingSlash(baseUrl) + path;
+
+        if (!_loggedFirstRequest)
+        {
+            _loggedFirstRequest = true;
+            Debug.Log($"[SignInferenceClient] POST {url} (image/jpeg, {jpegLen} bytes)");
+        }
+
+        using (UnityWebRequest req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
+        {
+            req.uploadHandler = new UploadHandlerRaw(jpegBytes ?? Array.Empty<byte>());
+            req.downloadHandler = new DownloadHandlerBuffer();
+            req.SetRequestHeader("Content-Type", "image/jpeg");
+            req.timeout = Mathf.RoundToInt(requestTimeoutSeconds);
+            yield return req.SendWebRequest();
+
+            float roundTripMs = (Time.realtimeSinceStartup - startedAt) * 1000f;
+
+            if (_applicationIsQuitting)
+            {
+                _requestInFlight = false;
+                yield break;
+            }
+
+            if (req.result != UnityWebRequest.Result.Success)
+            {
+                string err = "infer failed: " + req.error;
+                Debug.LogWarning("[SignInferenceClient] " + err);
+                _lastNetworkError = err;
+                Debug.LogWarning(
+                    $"[SignInferenceClient] latencyMs={roundTripMs:0} status=raw_infer_failed code={req.responseCode}");
+                OnNetworkError?.Invoke(err);
+                RecordCpuPipelineHttpFailure(jpegLen, roundTripMs);
+                if (logCpuPipelineDebug && logEveryCpuPipelineRequest)
+                {
+                    Debug.Log(
+                        $"[SignInferenceClient][cpu-pipe] jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} http=FAIL detection=n/a");
+                }
+                MaybeLogCpuPipelineSummary();
+            }
+            else
+            {
+                _lastNetworkError = "";
+                _sendSuccessCount++;
+                string body = req.downloadHandler.text ?? "";
+                string procHdr = req.GetResponseHeader("X-Process-Time-Ms");
+                float? serverProcMs = null;
+                if (!string.IsNullOrEmpty(procHdr)
+                    && float.TryParse(procHdr, NumberStyles.Float, CultureInfo.InvariantCulture, out float sp))
+                {
+                    serverProcMs = sp;
+                }
+
+                if (!TryParseInferResponse(body, out InferResponse response, out string parseErr))
+                {
+                    if (!string.IsNullOrEmpty(parseErr))
+                    {
+                        _lastNetworkError = parseErr;
+                        OnNetworkError?.Invoke(parseErr);
+                    }
+
+                    _cpuPipeParseFail++;
+                    RecordCpuPipelineRoundTripOnly(jpegLen, roundTripMs, serverProcMs);
+                    if (logCpuPipelineDebug && logEveryCpuPipelineRequest)
+                    {
+                        Debug.LogWarning(
+                            $"[SignInferenceClient][cpu-pipe] jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} serverProcMs={(serverProcMs.HasValue ? serverProcMs.Value.ToString("0.0", CultureInfo.InvariantCulture) : "n/a")} http=OK parse=FAIL");
+                    }
+                    MaybeLogCpuPipelineSummary();
+                }
+                else
+                {
+                    if (logCpuPipelineDebug && logEveryCpuPipelineRequest)
+                    {
+                        string det = response.no_hand ? "no_hand" : "hand";
+                        string spStr = serverProcMs.HasValue
+                            ? serverProcMs.Value.ToString("0.0", CultureInfo.InvariantCulture)
+                            : "n/a";
+                        Debug.Log(
+                            $"[SignInferenceClient][cpu-pipe] jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} serverProcMs={spStr} http=OK parse=OK detection={det} letter={response.letter} conf={response.confidence:0.000}");
+                    }
+
+                    if (!_loggedFirstSuccess)
+                    {
+                        _loggedFirstSuccess = true;
+                        Debug.Log("[SignInferenceClient] First raw inference response received.");
+                    }
+
+                    RecordCpuPipelineSuccess(jpegLen, roundTripMs, response, serverProcMs);
+                    if (!logEveryCpuPipelineRequest)
+                    {
+                        float latencyMs = roundTripMs;
+                        Debug.Log(
+                            $"[SignInferenceClient] latencyMs={latencyMs:0} raw_infer letter={response.letter} conf={response.confidence:0.000} no_hand={response.no_hand}");
+                    }
+
+                    HandleInferResponse(response);
+                    OnInferResponse?.Invoke(response);
+                    MaybeLogCpuPipelineSummary();
+                }
+            }
+        }
+
+        _requestInFlight = false;
+    }
+
+    private void RecordCpuPipelineHttpFailure(int jpegBytes, double roundTripMs)
+    {
+        _cpuPipeHttpFail++;
+        _cpuPipeTotalJpegBytes += jpegBytes;
+        _cpuPipeTotalRoundTripMs += roundTripMs;
+        _cpuPipeRoundTripSamples++;
+        CpuPipelineBumpCompleted(roundTripMs);
+    }
+
+    private void RecordCpuPipelineRoundTripOnly(int jpegBytes, double roundTripMs, float? serverProcMs = null)
+    {
+        _cpuPipeHttpOk++;
+        _cpuPipeTotalJpegBytes += jpegBytes;
+        _cpuPipeTotalRoundTripMs += roundTripMs;
+        _cpuPipeRoundTripSamples++;
+        if (serverProcMs.HasValue)
+        {
+            _cpuPipeTotalServerProcMs += serverProcMs.Value;
+            _cpuPipeServerProcSamples++;
+        }
+
+        CpuPipelineBumpCompleted(roundTripMs);
+    }
+
+    private void RecordCpuPipelineSuccess(int jpegBytes, double roundTripMs, InferResponse r, float? serverProcMs)
+    {
+        _cpuPipeHttpOk++;
+        _cpuPipeTotalJpegBytes += jpegBytes;
+        _cpuPipeTotalRoundTripMs += roundTripMs;
+        _cpuPipeRoundTripSamples++;
+        if (serverProcMs.HasValue)
+        {
+            _cpuPipeTotalServerProcMs += serverProcMs.Value;
+            _cpuPipeServerProcSamples++;
+        }
+
+        if (r.no_hand)
+        {
+            _cpuPipeNoHand++;
+        }
+        else
+        {
+            _cpuPipeHandDetected++;
+        }
+
+        CpuPipelineBumpCompleted(roundTripMs);
+    }
+
+    private void CpuPipelineBumpCompleted(double roundTripMs)
+    {
+        float rt = Time.realtimeSinceStartup;
+        if (_cpuPipeFirstCompletedRt < 0f)
+        {
+            _cpuPipeFirstCompletedRt = rt;
+        }
+
+        _cpuPipeLastCompletedRt = rt;
+        if (_cpuPipeSummaryWindowStartRt < 0f)
+        {
+            _cpuPipeSummaryWindowStartRt = rt;
+        }
+
+        _cpuPipeCompletedSinceLastSummary++;
+    }
+
+    private void MaybeLogCpuPipelineSummary()
+    {
+        if (!logCpuPipelineDebug)
+        {
+            return;
+        }
+
+        if (_cpuPipeRoundTripSamples <= 0 || _cpuPipeRoundTripSamples % logEveryNSendAttempts != 0)
+        {
+            return;
+        }
+
+        int httpTotal = _cpuPipeHttpOk + _cpuPipeHttpFail;
+        float httpOkRate = httpTotal > 0 ? _cpuPipeHttpOk / (float)httpTotal : 0f;
+        int detTotal = _cpuPipeHandDetected + _cpuPipeNoHand;
+        float handRate = detTotal > 0 ? _cpuPipeHandDetected / (float)detTotal : 0f;
+        float avgBytes = _cpuPipeRoundTripSamples > 0 ? (float)(_cpuPipeTotalJpegBytes / (double)_cpuPipeRoundTripSamples) : 0f;
+        float avgRtt = _cpuPipeRoundTripSamples > 0 ? (float)(_cpuPipeTotalRoundTripMs / _cpuPipeRoundTripSamples) : 0f;
+        float avgSrv = _cpuPipeServerProcSamples > 0 ? (float)(_cpuPipeTotalServerProcMs / _cpuPipeServerProcSamples) : 0f;
+        string avgSrvStr = _cpuPipeServerProcSamples > 0 ? avgSrv.ToString("0.0", CultureInfo.InvariantCulture) : "n/a";
+        float nowRt = Time.realtimeSinceStartup;
+        float overallFps = _cpuPipeRoundTripSamples > 0 && _cpuPipeFirstCompletedRt > 0f
+            ? _cpuPipeRoundTripSamples / Mathf.Max(1e-4f, nowRt - _cpuPipeFirstCompletedRt)
+            : 0f;
+        float windowDur = nowRt - _cpuPipeSummaryWindowStartRt;
+        float windowFps = windowDur > 1e-4f && _cpuPipeCompletedSinceLastSummary > 0
+            ? _cpuPipeCompletedSinceLastSummary / windowDur
+            : 0f;
+
+        Debug.Log(
+            "[SignInferenceClient][cpu-pipe:summary] " +
+            $"httpOk={_cpuPipeHttpOk} httpFail={_cpuPipeHttpFail} httpOkRate={httpOkRate:P0} " +
+            $"hand={_cpuPipeHandDetected} noHand={_cpuPipeNoHand} handDetectionRate={handRate:P0} parseFail={_cpuPipeParseFail} " +
+            $"avgJpegBytes={avgBytes:0} avgRoundTripMs={avgRtt:0.0} avgServerProcMs={avgSrvStr} " +
+            $"sendFpsOverall={overallFps:0.00} sendFpsWindow={windowFps:0.00}");
+
+        _cpuPipeCompletedSinceLastSummary = 0;
+        _cpuPipeSummaryWindowStartRt = nowRt;
+    }
+
     private IEnumerator PostInfer(byte[] jpegBytes)
     {
         _requestInFlight = true;
+        float startedAt = Time.realtimeSinceStartup;
 
         string callUrl = TrimTrailingSlash(baseUrl) + "/gradio_api/call/predict";
         #region agent log
@@ -1004,6 +1457,8 @@ public class SignInferenceClient : MonoBehaviour
                 string err = $"predict failed: {req.error}";
                 Debug.LogWarning("[SignInferenceClient] " + err);
                 _lastNetworkError = err;
+                float latencyMs = (Time.realtimeSinceStartup - startedAt) * 1000f;
+                Debug.LogWarning($"[SignInferenceClient] latencyMs={latencyMs:0} status=call_failed");
                 #region agent log
                 DebugWrite(
                     "pre-fix",
@@ -1023,6 +1478,8 @@ public class SignInferenceClient : MonoBehaviour
                     string err = "predict failed: missing event_id in /gradio_api/call/predict response";
                     Debug.LogWarning("[SignInferenceClient] " + err);
                     _lastNetworkError = err;
+                    float latencyMs = (Time.realtimeSinceStartup - startedAt) * 1000f;
+                    Debug.LogWarning($"[SignInferenceClient] latencyMs={latencyMs:0} status=missing_event_id");
                     OnNetworkError?.Invoke(err);
                 }
                 else
@@ -1038,6 +1495,8 @@ public class SignInferenceClient : MonoBehaviour
                             string err = $"predict stream failed: {streamReq.error}";
                             Debug.LogWarning("[SignInferenceClient] " + err);
                             _lastNetworkError = err;
+                            float latencyMs = (Time.realtimeSinceStartup - startedAt) * 1000f;
+                            Debug.LogWarning($"[SignInferenceClient] latencyMs={latencyMs:0} status=stream_failed");
                             OnNetworkError?.Invoke(err);
                         }
                         else
@@ -1063,6 +1522,9 @@ public class SignInferenceClient : MonoBehaviour
                             }
                             else
                             {
+                                float latencyMs = (Time.realtimeSinceStartup - startedAt) * 1000f;
+                                Debug.Log(
+                                    $"[SignInferenceClient] latencyMs={latencyMs:0} status=ok letter={response.letter} conf={response.confidence:0.000}");
                                 if (!_loggedFirstSuccess)
                                 {
                                     _loggedFirstSuccess = true;
@@ -1086,10 +1548,23 @@ public class SignInferenceClient : MonoBehaviour
         _inferCaptionLine = FormatInferCaption(response);
         ApplyCaptionToSubtitle();
 
-        if (response.confidence >= confidenceThreshold && !string.IsNullOrEmpty(response.letter))
+        if (response.no_hand)
         {
+            _pendingLetter = null;
+            if (letterText != null)
+            {
+                letterText.text = "NO HAND";
+            }
+        }
+        else if (!string.IsNullOrEmpty(response.letter))
+        {
+            // Phase A: expose current letter+confidence immediately (no history/debounce behavior).
             _pendingLetter = response.letter;
-            _nextUiApplyAt = Time.time + uiDebounceSeconds;
+            _nextUiApplyAt = Time.time;
+            if (letterText != null)
+            {
+                letterText.text = $"{response.letter} ({Mathf.Clamp01(response.confidence):P0})";
+            }
         }
 
         bool captionUsesToolkit =
@@ -1220,6 +1695,12 @@ public class SignInferenceClient : MonoBehaviour
             manual.confidence = cf;
         }
 
+        bool? noHand = ReadJsonBoolField(json, "no_hand");
+        if (noHand.HasValue)
+        {
+            manual.no_hand = noHand.Value;
+        }
+
         // Gradio call API may wrap output in data[0] object.
         if (string.IsNullOrEmpty(manual.letter))
         {
@@ -1257,7 +1738,8 @@ public class SignInferenceClient : MonoBehaviour
     private static bool InferResponseHasContent(InferResponse r)
     {
         if (r == null) return false;
-        return !string.IsNullOrEmpty(r.letter)
+        return r.no_hand
+            || !string.IsNullOrEmpty(r.letter)
             || !string.IsNullOrEmpty(r.text)
             || !string.IsNullOrEmpty(r.status_hint);
     }
@@ -1355,6 +1837,40 @@ public class SignInferenceClient : MonoBehaviour
         return sb.ToString();
     }
 
+    private static bool? ReadJsonBoolField(string json, string key)
+    {
+        string needle = "\"" + key + "\"";
+        int i = json.IndexOf(needle, StringComparison.Ordinal);
+        if (i < 0)
+        {
+            return null;
+        }
+
+        i = json.IndexOf(':', i);
+        if (i < 0)
+        {
+            return null;
+        }
+
+        i++;
+        while (i < json.Length && char.IsWhiteSpace(json[i]))
+        {
+            i++;
+        }
+
+        if (i + 4 <= json.Length && json.Substring(i, 4).Equals("true", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (i + 5 <= json.Length && json.Substring(i, 5).Equals("false", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return null;
+    }
+
     private static string ReadJsonNumberField(string json, string key)
     {
         string needle = "\"" + key + "\"";
@@ -1430,13 +1946,18 @@ public class SignInferenceClient : MonoBehaviour
         }
 
         var parts = new List<string>();
+        if (r.no_hand)
+        {
+            parts.Add("NO HAND");
+        }
+
         // Spell / sentence buffer is usually what users want to read first.
         if (!string.IsNullOrEmpty(r.text))
         {
             parts.Add(r.text.Trim());
         }
 
-        if (!string.IsNullOrEmpty(r.letter))
+        if (!r.no_hand && !string.IsNullOrEmpty(r.letter))
         {
             parts.Add($"{r.letter} ({Mathf.Clamp01(r.confidence):P0})");
         }

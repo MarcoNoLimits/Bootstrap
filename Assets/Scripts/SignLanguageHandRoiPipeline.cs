@@ -42,6 +42,9 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
     [SerializeField] private XROrigin xrOrigin;
     [SerializeField] private LocatableCameraArProjection locatableCamera;
 
+    /// <summary>Exposed for diagnostics from SignInferenceClient.</summary>
+    public LocatableCameraArProjection LocatableCamera => locatableCamera;
+
     [Header("Hand selection")]
     [SerializeField] private SignDominantHandPolicy dominantPolicy = SignDominantHandPolicy.PreferRight;
 
@@ -55,6 +58,8 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
     [Tooltip("When enabled, smooths ROI corners frame-to-frame to reduce jitter.")]
     [SerializeField] private bool smoothRoi = true;
     [SerializeField, Range(0.01f, 1f)] private float roiSmoothing = 0.35f;
+    [Tooltip("Minimum number of projected joints required to build ROI. Allows tolerance when one or two joints fail projection.")]
+    [SerializeField, Range(3, 6)] private int minProjectedJoints = 4;
 
     private XRHandSubsystem _handSubsystem;
 
@@ -123,6 +128,12 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
             return false;
         }
 
+        if (!locatableCamera.IntrinsicsReady)
+        {
+            LastInvalidReason = "intrinsics_not_ready";
+            return false;
+        }
+
         TryAcquireHandSubsystem();
         if (_handSubsystem == null)
         {
@@ -165,18 +176,27 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
         int h = _lastPvHeight > 0 ? _lastPvHeight : 504;
 
         float minU = float.PositiveInfinity, maxU = float.NegativeInfinity, minV = float.PositiveInfinity, maxV = float.NegativeInfinity;
+        int projectedCount = 0;
         for (int i = 0; i < worldPoints.Count; i++)
         {
             if (!locatableCamera.TryWorldToTexturePixel(worldPoints[i], w, h, out Vector2 uv))
             {
-                LastInvalidReason = "projection_failed";
-                return false;
+                continue;
             }
 
             minU = Mathf.Min(minU, uv.x);
             maxU = Mathf.Max(maxU, uv.x);
             minV = Mathf.Min(minV, uv.y);
             maxV = Mathf.Max(maxV, uv.y);
+            projectedCount++;
+        }
+
+        if (projectedCount < Mathf.Clamp(minProjectedJoints, 3, s_RoiJoints.Length))
+        {
+            string subReason = locatableCamera.LastProjectionFailReason;
+            LastInvalidReason = "projection_failed:" + (string.IsNullOrEmpty(subReason) ? "unknown" : subReason);
+            _hasSmoothedRoi = false;
+            return false;
         }
 
         int ix0 = Mathf.FloorToInt(minU);

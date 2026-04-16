@@ -19,11 +19,71 @@ Match the current ASL fingerspelling behavior from this repo:
 
 ## 3) Inference backend
 
-Current backend: Hugging Face Space.
+### A) HoloLens PV pipeline — Health (local / LAN)
+
+The Unity client (`SignInferenceClient` + `HololensPvCpuImageSource`) sends **raw JPEG** frames to a **Health** service:
+
+- **GET** `http://127.0.0.1:8000/health` — sanity check  
+- **POST** `http://127.0.0.1:8000/predict_hand` — **Content-Type: `image/jpeg`**, body = JPEG bytes  
+
+PowerShell examples:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
+$bytes = [System.IO.File]::ReadAllBytes("C:\path\to\your.jpg")
+Invoke-RestMethod -Uri http://127.0.0.1:8000/predict_hand -Method Post -ContentType "image/jpeg" -Body $bytes
+```
+
+On HoloLens, set **`baseUrl`** to `http://<PC_LAN_IP>:8000` (not `127.0.0.1`). Inspector: **`inferEndpointPath`** = `/predict_hand` (default).
+
+### Unity HoloLens — correct camera stack (common failure point)
+
+Use **AR Foundation PV** only:
+
+| Use | Do not use |
+|-----|------------|
+| `ARCameraManager` + `TryAcquireLatestCpuImage` → `XRCpuImage` | `WebCamTexture` |
+| Same path as this repo: `HololensPvCpuImageSource.cs` | Raw WinRT / MediaCapture-only paths for this pipeline |
+
+**Scene (XR Main Camera):**
+
+- `Camera`
+- `ARCameraManager` (required) -done
+- `ARCameraBackground` (optional; typical for passthrough)
+- `HololensPvCpuImageSource` (assign the same `ARCameraManager` or leave empty for `FindObjectOfType`)-done
+
+**UWP capabilities** (Project Settings → Player → Publishing Settings — this repo’s `ProjectSettings.asset` already enables):
+
+- **InternetClient** — HTTP to your PC -done
+- **WebCam** — needed for PV / camera access in the UWP manifest -done
+- **SpatialPerception** — MR / tracking (recommended on HoloLens) -done
+
+**Server URL:** `http://<PC_LAN_IP>:8000` with path **`/predict_hand`** for the Health contract (not `localhost` / `127.0.0.1` on device). Same Wi‑Fi as the PC. --done (but baseurl it,s http://192.168.1.42:8000)
+
+**Orientation:** if classification looks wrong, toggle **`mirrorY`** on `HololensPvCpuImageSource` (maps to `XRCpuImage.Transformation.MirrorY` vs `None`). -done
+
+### AR Foundation version + OpenXR (if you see “AR camera subsystem not running”)
+
+Unity’s **OpenXR** loader can run on HoloLens and Mixed Reality OpenXR will log `LocatableCameraProvider_Registered`, but **`ARCameraManager`** still needs a registered **`XRCameraSubsystem`** from AR Foundation’s platform provider.
+
+- **AR Foundation 4.x** (e.g. 4.1) documented HoloLens camera against the legacy **Windows XR Plugin**, not OpenXR-only.
+- **AR Foundation 5.1+** documents the **OpenXR Plug-in** as the HoloLens provider, including **camera** / `TryAcquireLatestCpuImage`.
+
+If `HololensPvCpuImageSource` reports **`AR camera subsystem not running`** (or `SubsystemManager` lists **no** `XRCameraSubsystem` descriptors on device), **upgrade `com.unity.xr.arfoundation`** in Package Manager to **5.1 or newer** (match your Unity 2022.3 LTS), keep **XR Plug-in Management → OpenXR** for UWP, then fix any API breakages the upgrader reports. After upgrade, rebuild UWP and deploy.
+
+**Ignore most of this in the VS Output window:** repeated `80070005` on `Windows.Networking.Connectivity` and similar lines are common when debugging UWP; they are not the root cause of the AR camera subsystem. **`0xC00DABE0` / “No capture devices are available”** often comes from a **Media Foundation / generic webcam** path—your PV path should be AR Foundation + `XRCpuImage`, not `WebCamTexture`.
+
+Expected JSON fields (client parses these):
+
+- `predicted_letter` (string)
+- `confidence` (float, 0..1)
+- `no_hand` (bool, optional)
+
+### B) Legacy: Hugging Face Space
 
 - Space ID: `mederbekaiana/Sign-Language`
 - Runtime: `https://mederbekaiana-sign-language.hf.space`
-- API name: `/predict`
+- API name: `/predict` (Gradio client path in Unity is separate)
 
 Expected response fields:
 

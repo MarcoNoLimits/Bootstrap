@@ -14,7 +14,7 @@ public class XRDebugLogger : MonoBehaviour
     {
         if (statusLabel == null) return;
 
-        // Bottom HUD must show /infer caption (letter, text, hint) — not send/capture telemetry.
+        // Bottom HUD must show sign caption (letter, text, hint) — not send/capture telemetry.
         string infer = SignInferenceClient.LiveCaptionForHud;
         if (!string.IsNullOrEmpty(infer))
         {

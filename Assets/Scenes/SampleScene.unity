@@ -923,6 +923,10 @@ GameObject:
   - component: {fileID: 1062420791}
   - component: {fileID: 1062420792}
   - component: {fileID: 1062420793}
+  - component: {fileID: 1062420794}
+  - component: {fileID: 1062420797}
+  - component: {fileID: 1062420796}
+  - component: {fileID: 1062420795}
   m_Layer: 0
   m_Name: '[BOOTSTRAP]'
   m_TagString: Untagged
@@ -942,6 +946,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 848b81a15a3d2a74c8d2adda24483e35, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _distance: 1.1
+  _smoothSpeed: 4
+  _rightOffsetMeters: 0.18
+  _verticalOffsetMeters: -0.05
+  _sceneBackgroundColor: {r: 0, g: 0, b: 0, a: 0}
 --- !u!4 &1062420787
 Transform:
   m_ObjectHideFlags: 0
@@ -993,6 +1002,7 @@ MonoBehaviour:
   minHandAreaFraction: 0.01
   smoothRoi: 1
   roiSmoothing: 0.35
+  minProjectedJoints: 4
 --- !u!114 &1062420792
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1030,6 +1040,158 @@ MonoBehaviour:
   requestFps: 30
   logRoiMetrics: 1
   logEveryNFrames: 15
+--- !u!114 &1062420794
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1062420785}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 33600ebc0db915040959ec40a9548194, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  usePlatformDefaultApiUrl: 1
+  baseUrl: http://192.168.1.42:8000
+  spell: 0
+  sessionId: 
+  requestTimeoutSeconds: 15
+  useXrCpuImagePipeline: 1
+  pvCpuImageSource: {fileID: 0}
+  inferEndpointPath: /predict_hand
+  minSendIntervalMs: 175
+  maxSendFrameWidth: 640
+  cpuPipelineCropCenter: 0
+  cpuPipelineCenterCropFraction: 0.92
+  useWebCamTexture: 0
+  hololensCameraOnly: 1
+  allowEditorDesktopCamera: 0
+  webCamStartMaxAttempts: 6
+  webCamRetryDelaySeconds: 1.5
+  overrideSource: {fileID: 0}
+  targetSize: 224
+  jpegQuality: 92
+  centerCropScale: 0.65
+  useHandRoiInference: 1
+  handRoiPipeline: {fileID: 1062420791}
+  handRoiMultipartFileName: hand.jpg
+  stage1Only: 1
+  combinedABMode: 1
+  signCaptureActive: 0
+  requestFps: 5
+  startCapturingOnLaunch: 1
+  dropIfRequestInFlight: 1
+  sendEveryNthFrame: 1
+  logEveryNSendAttempts: 20
+  skipSimilarFrames: 0
+  similarityThreshold: 0.04
+  similaritySampleSize: 16
+  stableFrames: 0
+  pauseMs: 0
+  minConf: 0
+  noiseFrames: 0
+  wordPauseMs: 0
+  letterText: {fileID: 0}
+  serverText: {fileID: 0}
+  statusHintText: {fileID: 0}
+  useSubtitleLabelFallback: 1
+  confidenceThreshold: 0.55
+  uiDebounceSeconds: 0.12
+  useServerTextAsAuthoritative: 1
+  logCpuPipelineDebug: 1
+  logEveryCpuPipelineRequest: 0
+  saveDebugFrames: 0
+  saveEveryNSends: 20
+  saveFirstSentFrames: 1
+  saveFirstSentFramesCount: 30
+--- !u!114 &1062420795
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1062420785}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f71750b0ddbc6684db43233f32a4cc76, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  arCameraManager: {fileID: 1062420796}
+  maxOutputWidth: 640
+  cropCenterRegion: 0
+  centerCropFraction: 0.92
+  jpegQuality: 88
+  mirrorY: 1
+--- !u!114 &1062420796
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1062420785}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4966719baa26e4b0e8231a24d9bd491a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_FocusMode: -1
+  m_LightEstimationMode: -1
+  m_AutoFocus: 1
+  m_LightEstimation: 0
+  m_FacingDirection: 1
+  m_RenderMode: 0
+--- !u!20 &1062420797
+Camera:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1062420785}
+  m_Enabled: 1
+  serializedVersion: 2
+  m_ClearFlags: 1
+  m_BackGroundColor: {r: 0.19215687, g: 0.3019608, b: 0.4745098, a: 0}
+  m_projectionMatrixMode: 1
+  m_GateFitMode: 2
+  m_FOVAxisMode: 0
+  m_Iso: 200
+  m_ShutterSpeed: 0.005
+  m_Aperture: 16
+  m_FocusDistance: 10
+  m_FocalLength: 50
+  m_BladeCount: 5
+  m_Curvature: {x: 2, y: 11}
+  m_BarrelClipping: 0.25
+  m_Anamorphism: 0
+  m_SensorSize: {x: 36, y: 24}
+  m_LensShift: {x: 0, y: 0}
+  m_NormalizedViewPortRect:
+    serializedVersion: 2
+    x: 0
+    y: 0
+    width: 1
+    height: 1
+  near clip plane: 0.3
+  far clip plane: 1000
+  field of view: 60
+  orthographic: 0
+  orthographic size: 5
+  m_Depth: 0
+  m_CullingMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  m_RenderingPath: -1
+  m_TargetTexture: {fileID: 0}
+  m_TargetDisplay: 0
+  m_TargetEye: 3
+  m_HDR: 1
+  m_AllowMSAA: 1
+  m_AllowDynamicResolution: 0
+  m_ForceIntoRT: 0
+  m_OcclusionCulling: 1
+  m_StereoConvergence: 10
+  m_StereoSeparation: 0.022
 --- !u!1 &1065435638
 GameObject:
   m_ObjectHideFlags: 0
@@ -1076,7 +1238,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   m_Camera: {fileID: 1593357425}
   m_OriginBaseGameObject: {fileID: 1065435638}
-  m_CameraFloorOffsetObject: {fileID: 377558917}
+  m_CameraFloorOffsetObject: {fileID: 1593357421}
   m_RequestedTrackingOriginMode: 0
   m_CameraYOffset: 1.1176
 --- !u!4 &1065435641
@@ -1263,6 +1425,7 @@ GameObject:
   - component: {fileID: 1593357424}
   - component: {fileID: 1593357423}
   - component: {fileID: 1593357426}
+  - component: {fileID: 1593357427}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -1465,10 +1628,28 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 77b3326415bcaa74583f13985e9e17fc, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  _arCameraManager: {fileID: 0}
+  _arCameraManager: {fileID: 1593357427}
   _camera: {fileID: 1593357425}
-  flipImageY: 1
+  flipImageY: 0
   mirrorImageX: 0
+--- !u!114 &1593357427
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1593357421}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4966719baa26e4b0e8231a24d9bd491a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_FocusMode: -1
+  m_LightEstimationMode: -1
+  m_AutoFocus: 1
+  m_LightEstimation: 0
+  m_FacingDirection: 1
+  m_RenderMode: 0
 --- !u!1 &1807992338
 GameObject:
   m_ObjectHideFlags: 0

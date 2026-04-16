@@ -1,5 +1,4 @@
 using System.Collections;
-using System.IO;
 using UnityEngine;
 using UnityEngine.UIElements;
 using UnityEngine.XR.Interaction.Toolkit;
@@ -7,8 +6,6 @@ using System.Collections.Generic;
 
 public class App : MonoBehaviour
 {
-    private const string DebugLogPath = "debug-729dee.log";
-    private const string DebugSessionId = "729dee";
     private const string DefaultAsrText = "Live speech appears here. Toggle translation to view Italian text.";
     public enum InputMode { None, Asr, Sign }
     public static InputMode CurrentInputMode { get; private set; } = InputMode.None;
@@ -126,20 +123,33 @@ public class App : MonoBehaviour
         rt.name = "UIRenderTexture";
 
         // 2. Setup Panel Settings
-        // We load the default, INSTANTIATE it to avoid changing the asset, and assign texture
         var originalSettings = Resources.Load<PanelSettings>("UI/DefaultPanelSettings");
-        PanelSettings runtimeSettings = Instantiate(originalSettings);
+        PanelSettings runtimeSettings;
+        if (originalSettings != null)
+        {
+            runtimeSettings = Instantiate(originalSettings);
+        }
+        else
+        {
+            Debug.LogError("[App] DefaultPanelSettings not found at Resources/UI/DefaultPanelSettings — creating fallback.");
+            runtimeSettings = ScriptableObject.CreateInstance<PanelSettings>();
+        }
         runtimeSettings.targetTexture = rt;
-        runtimeSettings.scaleMode = PanelScaleMode.ConstantPixelSize; // Maps 1:1 to texture
+        runtimeSettings.scaleMode = PanelScaleMode.ConstantPixelSize;
         runtimeSettings.scale = 1.0f;
         runtimeSettings.clearColor = true;
         runtimeSettings.colorClearValue = Color.clear;
 
         // 3. Setup UIDocument
+        var mainLayout = Resources.Load<VisualTreeAsset>("UI/MainLayout");
+        if (mainLayout == null)
+        {
+            Debug.LogError("[App] MainLayout.uxml not found at Resources/UI/MainLayout — UI will be blank.");
+        }
         GameObject uiLogicObject = new GameObject("UILogic");
         uiLogicObject.transform.SetParent(_mainUI.transform, false);
         var uiDoc = uiLogicObject.AddComponent<UIDocument>();
-        uiDoc.visualTreeAsset = Resources.Load<VisualTreeAsset>("UI/MainLayout");
+        uiDoc.visualTreeAsset = mainLayout;
         uiDoc.panelSettings = runtimeSettings;
 
         // 4. Quad + MeshCollider (must match rendered UI): BoxCollider hits do not give mesh UVs; manual
@@ -249,23 +259,6 @@ public class App : MonoBehaviour
             btnSlr.text = "Sign Language";
             btnSlr.clicked += () =>
             {
-                #region agent log
-                try
-                {
-                    string json =
-                        "{\"sessionId\":\"" + DebugSessionId + "\"," +
-                        "\"runId\":\"pre-fix\"," +
-                        "\"hypothesisId\":\"H1\"," +
-                        "\"location\":\"App.cs:btn-slr-capture\"," +
-                        "\"message\":\"Sign button clicked\"," +
-                        "\"data\":{\"beforeSignOn\":" + (_signOn ? "true" : "false") + ",\"mode\":\"" + CurrentInputMode.ToString() + "\"}," +
-                        "\"timestamp\":" + System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString() + "}\n";
-                    File.AppendAllText(
-                        DebugLogPath,
-                        json);
-                }
-                catch { }
-                #endregion
                 _signOn = !_signOn;
                 btnSlr.text = _signOn ? "Sign Language · On" : "Sign Language";
                 btnSlr.EnableInClassList("action-rail-btn-on", _signOn);

@@ -37,6 +37,8 @@ public class LocatableCameraArProjection : MonoBehaviour
 
     private void Awake()
     {
+        EnsureArSessionExists();
+
         if (_arCameraManager == null)
         {
             _arCameraManager = GetComponent<ARCameraManager>();
@@ -51,11 +53,69 @@ public class LocatableCameraArProjection : MonoBehaviour
         {
             _camera = GetComponent<Camera>();
         }
+
+        // On HoloLens, AR camera provider startup is more reliable when ARCameraBackground is present.
+        if (GetComponent<ARCameraBackground>() == null)
+        {
+            gameObject.AddComponent<ARCameraBackground>();
+            Debug.Log("[LocatableCameraArProjection] Added ARCameraBackground to camera.");
+        }
+    }
+
+    private static void EnsureArSessionExists()
+    {
+        ARSession existing = FindObjectOfType<ARSession>();
+        if (existing != null)
+        {
+            return;
+        }
+
+        GameObject sessionGo = new GameObject("AR Session (Auto)");
+        sessionGo.AddComponent<ARSession>();
+        Debug.Log("[LocatableCameraArProjection] Added missing ARSession to scene.");
     }
 
     /// <summary>
     /// Projects a world-space point to pixel coordinates in the same orientation as the Unity texture used for PV (typically WebCamTexture).
     /// </summary>
+    /// <summary>True once ARCameraManager has provided intrinsics at least once.</summary>
+    public bool IntrinsicsReady { get; private set; }
+
+    /// <summary>Human-readable camera subsystem status for on-screen debug display.</summary>
+    public string CameraStatusLine { get; private set; } = "cam:init";
+
+    private int _camDiagFrame;
+
+    private void Update()
+    {
+        if (!IntrinsicsReady && _arCameraManager != null)
+        {
+            if (_arCameraManager.TryGetIntrinsics(out _))
+            {
+                IntrinsicsReady = true;
+                CameraStatusLine = "cam:intrinsics_ok";
+                Debug.Log("[LocatableCameraArProjection] Intrinsics ready — projection enabled.");
+            }
+        }
+
+        // Diagnostics: update status line every 90 frames (~3 s at 30 fps)
+        _camDiagFrame++;
+        if (_camDiagFrame % 90 == 0)
+        {
+            bool camEnabled = _arCameraManager != null && _arCameraManager.enabled;
+            bool subsysExists = _arCameraManager?.subsystem != null;
+            bool subsysRunning = subsysExists && _arCameraManager.subsystem.running;
+            XRCameraIntrinsics intr = default;
+            bool gotIntrinsics = _arCameraManager != null && _arCameraManager.TryGetIntrinsics(out intr);
+            string intrRes = gotIntrinsics ? $"{intr.resolution.x}x{intr.resolution.y}" : "none";
+            CameraStatusLine = $"cam enabled={camEnabled} sub={subsysExists} run={subsysRunning} intr={intrRes}";
+            Debug.Log($"[LocatableCameraArProjection] {CameraStatusLine}");
+        }
+    }
+
+    /// <summary>Last sub-reason why TryWorldToTexturePixel returned false. Empty when successful.</summary>
+    public string LastProjectionFailReason { get; private set; } = "";
+
     public bool TryWorldToTexturePixel(
         Vector3 worldPosition,
         int textureWidth,
@@ -65,11 +125,13 @@ public class LocatableCameraArProjection : MonoBehaviour
         pixel = default;
         if (_arCameraManager == null || _camera == null || textureWidth <= 0 || textureHeight <= 0)
         {
+            LastProjectionFailReason = "null_refs(arCam=" + (_arCameraManager != null) + ",cam=" + (_camera != null) + ")";
             return false;
         }
 
         if (!_arCameraManager.TryGetIntrinsics(out XRCameraIntrinsics intrinsics))
         {
+            LastProjectionFailReason = "intrinsics_not_ready";
             return false;
         }
 
@@ -77,6 +139,7 @@ public class LocatableCameraArProjection : MonoBehaviour
         // Unity camera view space: in front of the camera, Z is negative.
         if (view.z >= -1e-5f)
         {
+            LastProjectionFailReason = "joint_behind_camera(z=" + view.z.ToString("0.00") + ")";
             return false;
         }
 
@@ -87,6 +150,7 @@ public class LocatableCameraArProjection : MonoBehaviour
         Vector2Int res = intrinsics.resolution;
         if (res.x <= 0 || res.y <= 0)
         {
+            LastProjectionFailReason = "intrinsics_res_zero";
             return false;
         }
 
