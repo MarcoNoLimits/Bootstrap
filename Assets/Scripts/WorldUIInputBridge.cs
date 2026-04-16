@@ -11,6 +11,9 @@ public class WorldUIInputBridge : MonoBehaviour
     [SerializeField] private bool enableHoverDwellClick = true;
     [SerializeField] private float hoverDwellSeconds = 0.16f;
     [SerializeField] private float hoverClickCooldownSeconds = 0.25f;
+    [SerializeField] private float selectClickCooldownSeconds = 0.18f;
+    [SerializeField] private float rayHitGraceSeconds = 0.12f;
+    [SerializeField] private float pointerSmoothing = 22f;
 
     private XRRayInteractor _currentInteractor;
     private bool _isHovering;
@@ -20,22 +23,30 @@ public class WorldUIInputBridge : MonoBehaviour
     private VisualElement _lastHoverTarget;
     private float _hoverTargetSinceTime = -1f;
     private float _lastHoverClickTime = -999f;
+    private float _lastSelectClickTime = -999f;
+    private float _lastValidRayHitTime = -999f;
+    private Vector2 _smoothedPanelPos;
+    private bool _hasSmoothedPanelPos;
 
     // Triggered by XRSimpleInteractable
     public void OnSelectEntered(SelectEnterEventArgs args)
     {
         if (args.interactorObject is not XRRayInteractor rayInteractor) return;
+        if (Time.time < _lastSelectClickTime + selectClickCooldownSeconds) return;
 
         Vector2? panelPos = null;
 
         if (TryGetUiRaycastHit(rayInteractor, out RaycastHit hit) && hit.collider == targetCollider)
-            panelPos = HitToPanelPosition(hit);
+            panelPos = UpdateSmoothedPanelPosition(HitToPanelPosition(hit));
+        else if (_hasSmoothedPanelPos)
+            panelPos = _smoothedPanelPos;
         else if (_lastHoverPanelPos.HasValue)
             panelPos = _lastHoverPanelPos;
 
         if (!panelPos.HasValue) return;
 
         ClickUIAtPanelPosition(panelPos.Value);
+        _lastSelectClickTime = Time.time;
     }
 
     public void OnHoverEntered(HoverEnterEventArgs args)
@@ -56,6 +67,7 @@ public class WorldUIInputBridge : MonoBehaviour
             _lastHoverPanelPos = null;
             _lastHoverTarget = null;
             _hoverTargetSinceTime = -1f;
+            _hasSmoothedPanelPos = false;
         }
     }
 
@@ -72,12 +84,32 @@ public class WorldUIInputBridge : MonoBehaviour
         {
             if (TryGetUiRaycastHit(_currentInteractor, out RaycastHit hit) && hit.collider == targetCollider)
             {
-                Vector2 panelPos = HitToPanelPosition(hit);
+                Vector2 panelPos = UpdateSmoothedPanelPosition(HitToPanelPosition(hit));
                 _lastHoverPanelPos = panelPos;
+                _lastValidRayHitTime = Time.time;
                 MovePointer(panelPos);
                 MaybeHoverDwellClick(panelPos);
             }
+            else if (_hasSmoothedPanelPos && Time.time - _lastValidRayHitTime <= rayHitGraceSeconds)
+            {
+                // Preserve pointer stability when right-hand pinch briefly drops 3D ray hits.
+                MovePointer(_smoothedPanelPos);
+            }
         }
+    }
+
+    private Vector2 UpdateSmoothedPanelPosition(Vector2 rawPanelPos)
+    {
+        if (!_hasSmoothedPanelPos)
+        {
+            _smoothedPanelPos = rawPanelPos;
+            _hasSmoothedPanelPos = true;
+            return _smoothedPanelPos;
+        }
+
+        float t = Mathf.Clamp01(pointerSmoothing * Time.deltaTime);
+        _smoothedPanelPos = Vector2.Lerp(_smoothedPanelPos, rawPanelPos, t);
+        return _smoothedPanelPos;
     }
 
     private void MaybeHoverDwellClick(Vector2 panelPos)

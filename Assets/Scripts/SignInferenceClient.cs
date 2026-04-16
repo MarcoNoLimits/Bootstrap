@@ -24,7 +24,7 @@ public class InferResponse
 /// - Captures camera frames (WebCamTexture) or an override Texture source
 /// - Crops ROI on-device: optional hand ROI (OpenXR hands + AR Foundation PV projection) or center crop
 /// - Resizes to 224x224
-/// - JPEG-encodes and POSTs multipart form-data to /infer (field name <c>image</c>; filename <c>hand.jpg</c> in hand ROI mode)
+/// - JPEG-encodes and POSTs multipart form-data to /predict (field name <c>img</c>; filename <c>hand.jpg</c> in hand ROI mode)
 /// - Parses JSON and updates UI with debounce/confidence threshold
 /// - Exposes optional spell endpoint methods for UI buttons
 /// </summary>
@@ -34,13 +34,13 @@ public class SignInferenceClient : MonoBehaviour
     private const string DebugLogPath = "debug-729dee.log";
     private const string DebugSessionId = "729dee";
     [Header("API")]
-    [Tooltip("If true, Awake sets the URL for this platform (Editor/PC: 127.0.0.1:8010; UWP device: LAN IP:8010). Turn off to use baseUrl from the inspector.")]
+    [Tooltip("If true, Awake sets the Hugging Face Space runtime URL for this platform. Turn off to use baseUrl from the inspector.")]
     [SerializeField] private bool usePlatformDefaultApiUrl = true;
-    [Tooltip("Overridden at runtime when usePlatformDefaultApiUrl is true. HoloLens: use your PC Wi‑Fi IP if it changes.")]
-    [SerializeField] private string baseUrl = "http://127.0.0.1:8010";
-    [SerializeField] private bool spell = true;
+    [Tooltip("Overridden at runtime when usePlatformDefaultApiUrl is true.")]
+    [SerializeField] private string baseUrl = "https://mederbekaiana-sign-language.hf.space";
+    [SerializeField] private bool spell = false;
     [SerializeField] private string sessionId = "";
-    [SerializeField] private float requestTimeoutSeconds = 4f;
+    [SerializeField] private float requestTimeoutSeconds = 15f;
 
     [Header("Capture")]
     [Tooltip("If enabled and available, uses WebCamTexture (PV camera) as source.")]
@@ -58,7 +58,7 @@ public class SignInferenceClient : MonoBehaviour
     [Tooltip("Optional texture source if not using WebCamTexture (e.g. RenderTexture converted elsewhere).")]
     [SerializeField] private Texture overrideSource;
     [SerializeField] private int targetSize = 224;
-    [SerializeField] private int jpegQuality = 70;
+    [SerializeField] private int jpegQuality = 92;
     [SerializeField, Range(0.25f, 1f)] private float centerCropScale = 0.65f;
 
     [Header("Hand ROI + PV (HoloLens 2)")]
@@ -72,7 +72,7 @@ public class SignInferenceClient : MonoBehaviour
     [Tooltip("If false, sign capture stays idle until enabled from UI/code.")]
     [SerializeField] private bool signCaptureActive = false;
     [Tooltip("Inference requests per second, independent from camera FPS.")]
-    [SerializeField] private float requestFps = 8f;
+    [SerializeField] private float requestFps = 5f;
     [Tooltip("When enabled, sends the first inference request as soon as startup capture is ready.")]
     [SerializeField] private bool startCapturingOnLaunch = true;
     [Tooltip("Skip frame while one request is running.")]
@@ -101,7 +101,7 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private Text statusHintText;
     [Tooltip("If no legacy Text is assigned, write status to UI Toolkit label 'subtitle-text'.")]
     [SerializeField] private bool useSubtitleLabelFallback = true;
-    [SerializeField] private float confidenceThreshold = 0.5f;
+    [SerializeField] private float confidenceThreshold = 0.55f;
     [SerializeField] private float uiDebounceSeconds = 0.12f;
     [SerializeField] private bool useServerTextAsAuthoritative = true;
 
@@ -202,15 +202,15 @@ public class SignInferenceClient : MonoBehaviour
     private void ApplyPlatformDefaultBaseUrl()
     {
 #if UNITY_EDITOR
-        baseUrl = "http://127.0.0.1:8010";
+        baseUrl = "https://mederbekaiana-sign-language.hf.space";
 #elif UNITY_WSA && !UNITY_EDITOR
-        baseUrl = "http://172.16.23.67:8010";
+        baseUrl = "https://mederbekaiana-sign-language.hf.space";
 #else
-        baseUrl = "http://127.0.0.1:8010";
+        baseUrl = "https://mederbekaiana-sign-language.hf.space";
 #endif
     }
 
-    /// <summary>Sets the server root for <c>/infer</c> (no trailing slash). Stops platform presets from overriding this in the same session.</summary>
+    /// <summary>Sets the server root for <c>/predict</c> (no trailing slash). Stops platform presets from overriding this in the same session.</summary>
     public void SetInferenceBaseUrl(string url)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -951,39 +951,29 @@ public class SignInferenceClient : MonoBehaviour
     {
         _requestInFlight = true;
 
-        string url = TrimTrailingSlash(baseUrl) + "/infer";
+        string callUrl = TrimTrailingSlash(baseUrl) + "/gradio_api/call/predict";
         #region agent log
         DebugWrite(
             "pre-fix",
             "H2",
             "SignInferenceClient.cs:PostInfer",
             "Sending infer request",
-            "{\"url\":\"" + url.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\",\"bytes\":" + (jpegBytes != null ? jpegBytes.Length : 0).ToString(CultureInfo.InvariantCulture) + "}");
+            "{\"url\":\"" + callUrl.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\",\"bytes\":" + (jpegBytes != null ? jpegBytes.Length : 0).ToString(CultureInfo.InvariantCulture) + "}");
         #endregion
         if (!_loggedFirstRequest)
         {
             _loggedFirstRequest = true;
-            Debug.Log("[SignInferenceClient] Sending first inference request to " + url);
-        }
-        List<IMultipartFormSection> form = new List<IMultipartFormSection>
-        {
-            new MultipartFormFileSection("image", jpegBytes, _lastMultipartFileName ?? "frame.jpg", "image/jpeg")
-        };
-
-        if (spell)
-        {
-            form.Add(new MultipartFormDataSection("spell", "true"));
-            form.Add(new MultipartFormDataSection("session_id", sessionId));
+            Debug.Log("[SignInferenceClient] Sending first inference request to " + callUrl);
         }
 
-        if (stableFrames > 0) form.Add(new MultipartFormDataSection("stable_frames", stableFrames.ToString()));
-        if (pauseMs > 0) form.Add(new MultipartFormDataSection("pause_ms", pauseMs.ToString()));
-        if (minConf > 0f) form.Add(new MultipartFormDataSection("min_conf", minConf.ToString("0.###")));
-        if (noiseFrames > 0) form.Add(new MultipartFormDataSection("noise_frames", noiseFrames.ToString()));
-        if (wordPauseMs > 0) form.Add(new MultipartFormDataSection("word_pause_ms", wordPauseMs.ToString()));
+        string imageDataUrl = "data:image/jpeg;base64," + Convert.ToBase64String(jpegBytes ?? Array.Empty<byte>());
+        string payload = "{\"data\":[{\"url\":\"" + imageDataUrl + "\"}]}";
 
-        using (UnityWebRequest req = UnityWebRequest.Post(url, form))
+        using (UnityWebRequest req = new UnityWebRequest(callUrl, UnityWebRequest.kHttpVerbPOST))
         {
+            req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(payload));
+            req.downloadHandler = new DownloadHandlerBuffer();
+            req.SetRequestHeader("Content-Type", "application/json");
             req.timeout = Mathf.RoundToInt(requestTimeoutSeconds);
             UnityWebRequestAsyncOperation op = null;
             try
@@ -1011,7 +1001,7 @@ public class SignInferenceClient : MonoBehaviour
 
             if (req.result != UnityWebRequest.Result.Success)
             {
-                string err = $"infer failed: {req.error}";
+                string err = $"predict failed: {req.error}";
                 Debug.LogWarning("[SignInferenceClient] " + err);
                 _lastNetworkError = err;
                 #region agent log
@@ -1026,35 +1016,64 @@ public class SignInferenceClient : MonoBehaviour
             }
             else
             {
-                _lastNetworkError = "";
-                _sendSuccessCount++;
-                string json = req.downloadHandler.text;
-                #region agent log
-                DebugWrite(
-                    "pre-fix",
-                    "H4",
-                    "SignInferenceClient.cs:PostInfer",
-                    "Infer request succeeded",
-                    "{\"responseCode\":" + req.responseCode.ToString(CultureInfo.InvariantCulture) + ",\"jsonLength\":" + (json != null ? json.Length : 0).ToString(CultureInfo.InvariantCulture) + "}");
-                #endregion
-                if (!TryParseInferResponse(json, out InferResponse response, out string parseErr))
+                string callResponse = req.downloadHandler.text ?? "";
+                string eventId = ReadJsonStringField(callResponse, "event_id");
+                if (string.IsNullOrEmpty(eventId))
                 {
-                    if (!string.IsNullOrEmpty(parseErr))
-                    {
-                        _lastNetworkError = parseErr;
-                        OnNetworkError?.Invoke(parseErr);
-                    }
+                    string err = "predict failed: missing event_id in /gradio_api/call/predict response";
+                    Debug.LogWarning("[SignInferenceClient] " + err);
+                    _lastNetworkError = err;
+                    OnNetworkError?.Invoke(err);
                 }
                 else
                 {
-                    if (!_loggedFirstSuccess)
+                    string streamUrl = TrimTrailingSlash(baseUrl) + "/gradio_api/call/predict/" + eventId;
+                    using (UnityWebRequest streamReq = UnityWebRequest.Get(streamUrl))
                     {
-                        _loggedFirstSuccess = true;
-                        Debug.Log("[SignInferenceClient] First inference response received.");
-                    }
+                        streamReq.timeout = Mathf.RoundToInt(requestTimeoutSeconds);
+                        yield return streamReq.SendWebRequest();
 
-                    HandleInferResponse(response);
-                    OnInferResponse?.Invoke(response);
+                        if (streamReq.result != UnityWebRequest.Result.Success)
+                        {
+                            string err = $"predict stream failed: {streamReq.error}";
+                            Debug.LogWarning("[SignInferenceClient] " + err);
+                            _lastNetworkError = err;
+                            OnNetworkError?.Invoke(err);
+                        }
+                        else
+                        {
+                            _lastNetworkError = "";
+                            _sendSuccessCount++;
+                            string json = ExtractJsonObjectFromSse(streamReq.downloadHandler.text);
+                            #region agent log
+                            DebugWrite(
+                                "pre-fix",
+                                "H4",
+                                "SignInferenceClient.cs:PostInfer",
+                                "Infer request succeeded",
+                                "{\"responseCode\":" + streamReq.responseCode.ToString(CultureInfo.InvariantCulture) + ",\"jsonLength\":" + (json != null ? json.Length : 0).ToString(CultureInfo.InvariantCulture) + "}");
+                            #endregion
+                            if (!TryParseInferResponse(json, out InferResponse response, out string parseErr))
+                            {
+                                if (!string.IsNullOrEmpty(parseErr))
+                                {
+                                    _lastNetworkError = parseErr;
+                                    OnNetworkError?.Invoke(parseErr);
+                                }
+                            }
+                            else
+                            {
+                                if (!_loggedFirstSuccess)
+                                {
+                                    _loggedFirstSuccess = true;
+                                    Debug.Log("[SignInferenceClient] First inference response received.");
+                                }
+
+                                HandleInferResponse(response);
+                                OnInferResponse?.Invoke(response);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1159,7 +1178,7 @@ public class SignInferenceClient : MonoBehaviour
         error = null;
         if (string.IsNullOrWhiteSpace(raw))
         {
-            error = "empty /infer body";
+            error = "empty /predict body";
             return false;
         }
 
@@ -1187,6 +1206,10 @@ public class SignInferenceClient : MonoBehaviour
 
         InferResponse manual = new InferResponse();
         manual.letter = ReadJsonStringField(json, "letter");
+        if (string.IsNullOrEmpty(manual.letter))
+        {
+            manual.letter = ReadJsonStringField(json, "predicted_letter");
+        }
         manual.text = ReadJsonStringField(json, "text");
         manual.status_hint = ReadJsonStringField(json, "status_hint");
         manual.model = ReadJsonStringField(json, "model");
@@ -1197,13 +1220,37 @@ public class SignInferenceClient : MonoBehaviour
             manual.confidence = cf;
         }
 
+        // Gradio call API may wrap output in data[0] object.
+        if (string.IsNullOrEmpty(manual.letter))
+        {
+            string wrapped = ReadFirstDataObject(json);
+            if (!string.IsNullOrEmpty(wrapped))
+            {
+                manual.letter = ReadJsonStringField(wrapped, "predicted_letter");
+                if (string.IsNullOrEmpty(manual.letter))
+                {
+                    manual.letter = ReadJsonStringField(wrapped, "letter");
+                }
+
+                if (manual.confidence <= 0f)
+                {
+                    string nestedConf = ReadJsonNumberField(wrapped, "confidence");
+                    if (!string.IsNullOrEmpty(nestedConf)
+                        && float.TryParse(nestedConf, NumberStyles.Float, CultureInfo.InvariantCulture, out float nestedCf))
+                    {
+                        manual.confidence = nestedCf;
+                    }
+                }
+            }
+        }
+
         if (InferResponseHasContent(manual))
         {
             response = manual;
             return true;
         }
 
-        error = error ?? "could not read letter/text/status_hint from /infer JSON";
+        error = error ?? "could not read predicted_letter/letter/text/status_hint from /predict JSON";
         return false;
     }
 
@@ -1226,6 +1273,33 @@ public class SignInferenceClient : MonoBehaviour
         }
 
         return s.Trim();
+    }
+
+    private static string ExtractJsonObjectFromSse(string sse)
+    {
+        if (string.IsNullOrWhiteSpace(sse))
+        {
+            return sse;
+        }
+
+        string[] lines = sse.Split('\n');
+        for (int i = lines.Length - 1; i >= 0; i--)
+        {
+            string line = lines[i].Trim();
+            if (!line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string payload = line.Substring(5).Trim();
+            string json = ExtractJsonObject(payload);
+            if (!string.IsNullOrEmpty(json) && json.StartsWith("{", StringComparison.Ordinal))
+            {
+                return json;
+            }
+        }
+
+        return ExtractJsonObject(sse);
     }
 
     private static string ReadJsonStringField(string json, string key)
@@ -1309,6 +1383,43 @@ public class SignInferenceClient : MonoBehaviour
 
         if (i == start) return null;
         return json.Substring(start, i - start);
+    }
+
+    private static string ReadFirstDataObject(string json)
+    {
+        if (string.IsNullOrEmpty(json))
+        {
+            return null;
+        }
+
+        int dataIdx = json.IndexOf("\"data\"", StringComparison.Ordinal);
+        if (dataIdx < 0)
+        {
+            return null;
+        }
+
+        int objStart = json.IndexOf('{', dataIdx);
+        if (objStart < 0)
+        {
+            return null;
+        }
+
+        int depth = 0;
+        for (int i = objStart; i < json.Length; i++)
+        {
+            char c = json[i];
+            if (c == '{') depth++;
+            if (c == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return json.Substring(objStart, i - objStart + 1);
+                }
+            }
+        }
+
+        return null;
     }
 
     private static string FormatInferCaption(InferResponse r)
@@ -1464,6 +1575,15 @@ public class SignInferenceClient : MonoBehaviour
 
     private IEnumerator PostSpellCommand(string path)
     {
+        if (UsesHuggingFaceSpaceApi())
+        {
+            string msg = $"Spell action not supported by this Space API: {path}";
+            Debug.LogWarning("[SignInferenceClient] " + msg);
+            _lastNetworkError = msg;
+            OnNetworkError?.Invoke(msg);
+            yield break;
+        }
+
         if (string.IsNullOrWhiteSpace(sessionId))
         {
             sessionId = Guid.NewGuid().ToString("N");
@@ -1502,5 +1622,16 @@ public class SignInferenceClient : MonoBehaviour
         }
 
         return s;
+    }
+
+    private bool UsesHuggingFaceSpaceApi()
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            return false;
+        }
+
+        return baseUrl.IndexOf("hf.space", StringComparison.OrdinalIgnoreCase) >= 0
+            || baseUrl.IndexOf("huggingface.co", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 }

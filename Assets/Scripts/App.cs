@@ -10,7 +10,6 @@ public class App : MonoBehaviour
     private const string DebugLogPath = "debug-729dee.log";
     private const string DebugSessionId = "729dee";
     private const string DefaultAsrText = "Live speech appears here. Toggle translation to view Italian text.";
-    private const string SignInferenceBaseUrl = "http://127.0.0.1:8010";
     public enum InputMode { None, Asr, Sign }
     public static InputMode CurrentInputMode { get; private set; } = InputMode.None;
     public static bool IsTranslationEnabled { get; private set; }
@@ -292,11 +291,6 @@ public class App : MonoBehaviour
                 var signClient = FindObjectOfType<SignInferenceClient>();
                 if (signClient != null)
                 {
-                    if (_signOn)
-                    {
-                        signClient.SetInferenceBaseUrl(SignInferenceBaseUrl);
-                    }
-
                     signClient.SetSignCaptureActive(_signOn);
                 }
             };
@@ -401,7 +395,6 @@ public class App : MonoBehaviour
         var signClient = FindObjectOfType<SignInferenceClient>();
         if (signClient != null)
         {
-            signClient.SetInferenceBaseUrl(SignInferenceBaseUrl);
             signClient.SetSignCaptureActive(false);
         }
 

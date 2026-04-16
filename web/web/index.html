@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HoloAssist Web Rail</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      overflow: hidden;
+      font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #f5f5f8;
+      background: transparent;
+    }
+    #camera-bg {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      z-index: -2;
+      background: #060d1a;
+      filter: none;
+      -webkit-filter: none;
+    }
+    .fallback-bg {
+      position: fixed;
+      inset: 0;
+      z-index: -3;
+      background: url('https://images.unsplash.com/photo-1526498460520-4c246339dccb?w=1600') center/cover no-repeat;
+    }
+    .dark-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      opacity: 0;
+      background: transparent;
+      pointer-events: none;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+    .hud {
+      position: fixed;
+      right: 82px;
+      top: 42%;
+      transform: translateY(-50%);
+      width: 235px;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      z-index: 10;
+    }
+    .action-btn {
+      min-height: 72px;
+      width: 100%;
+      border: 0;
+      border-radius: 14px;
+      font-size: 19px;
+      font-weight: 700;
+      color: rgba(255,255,255,0.98);
+      background: rgba(20, 60, 110, 0.92);
+      cursor: pointer;
+    }
+    #btn-sign {
+      background: rgba(34, 138, 70, 0.94);
+      border: 1px solid rgba(120, 230, 160, 0.65);
+    }
+    .action-btn.settings {
+      background: transparent;
+      border: 2px solid rgba(255,255,255,0.38);
+    }
+    .action-btn.translation {
+      background: rgba(170, 35, 45, 0.92);
+      border: 1px solid rgba(255, 140, 150, 0.7);
+      display: none;
+    }
+    #btn-settings.active {
+      background: rgba(196, 44, 58, 0.95);
+      border-color: rgba(255, 165, 175, 0.9);
+      color: #fff7f8;
+      box-shadow: 0 0 18px rgba(255, 98, 120, 0.45);
+    }
+    .action-btn.active {
+      background: rgba(40,160,90,0.92);
+      color: #ffffff;
+      box-shadow: 0 0 18px rgba(80, 220, 150, 0.5);
+    }
+    #btn-asr.active {
+      background: rgba(45, 120, 215, 0.94);
+      box-shadow: 0 0 18px rgba(90, 180, 255, 0.58);
+    }
+    .volume {
+      position: fixed;
+      right: 0px;
+      top: 152%;
+      transform: translateY(-50%);
+      width: 86px;
+      height: 30px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 2px;
+    }
+    .volume span {
+      width: 5px;
+      border-radius: 2px;
+      background: rgba(182,188,198,0.86);
+    }
+    .volume span:nth-child(1) { height: 5px; }
+    .volume span:nth-child(2) { height: 7px; }
+    .volume span:nth-child(3) { height: 11px; }
+    .volume span:nth-child(4) { height: 15px; }
+    .volume span:nth-child(5) { height: 19px; }
+    .volume span:nth-child(6) { height: 24px; }
+    .volume span:nth-child(7) { height: 28px; }
+    .volume span:nth-child(8) { height: 33px; }
+    .status {
+      position: fixed;
+      left: 50%;
+      bottom: 34px;
+      transform: translateX(-50%);
+      width: min(92vw, 1000px);
+      min-height: 42px;
+      font-size: 34px;
+      line-height: 1.25;
+      font-weight: 600;
+      text-align: center;
+      color: rgba(235, 245, 255, 0.98);
+      text-shadow: 0 2px 12px rgba(0,0,0,0.85);
+      word-break: break-word;
+      white-space: pre-line;
+    }
+    .btn-clear-caption {
+      position: fixed;
+      left: 22px;
+      bottom: 22px;
+      z-index: 11;
+      padding: 12px 18px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.38);
+      background: rgba(12, 22, 42, 0.88);
+      color: rgba(245, 245, 250, 0.96);
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    }
+    .btn-clear-caption:hover {
+      background: rgba(22, 36, 62, 0.92);
+    }
+    #sign-top-bar {
+      position: fixed;
+      left: 0;
+      right: 0;
+      top: 0;
+      z-index: 9;
+      padding: 10px 16px 12px;
+      text-align: center;
+      pointer-events: none;
+    }
+    #sign-top-bar[hidden] {
+      display: none !important;
+    }
+    #sign-instruction {
+      margin: 0 0 6px 0;
+      font-size: 16px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      color: rgba(255, 255, 255, 0.82);
+      line-height: 1.35;
+      text-shadow: 0 1px 10px rgba(0, 0, 0, 0.85);
+    }
+    #sign-live-hint {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 400;
+      color: rgba(255, 255, 255, 0.96);
+      line-height: 1.3;
+      text-shadow: 0 1px 8px rgba(0, 0, 0, 0.8);
+    }
+    #sign-live-hint[hidden] {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+  <div class="fallback-bg"></div>
+  <video id="camera-bg" autoplay muted playsinline></video>
+  <div class="dark-overlay"></div>
+
+  <div id="sign-top-bar" hidden>
+    <p id="sign-instruction"></p>
+    <div id="sign-live-hint" hidden aria-live="polite"></div>
+  </div>
+
+  <div class="hud">
+    <button id="btn-asr" class="action-btn">Start ASR</button>
+    <button id="btn-settings" class="action-btn settings">Language translation</button>
+    <button id="btn-sign" class="action-btn" title="Strict mode: hand should fill 35-55% of frame, centered, fingers fully visible, palm toward camera, no wrist rotation. Use bright front light and plain background. Optional stricter server: min_conf=0.80, stable_frames=10 (slower).">Start Sign Language</button>
+    <div id="volume" class="volume"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+  </div>
+  <div id="status" class="status">Ready.</div>
+  <button type="button" id="btn-clear-caption" class="btn-clear-caption" title="Clear caption text">Clear text</button>
+
+  <script>
+    (function cameraBackground() {
+      var cam = document.getElementById('camera-bg');
+      navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        .then(function(stream) { cam.srcObject = stream; })
+        .catch(function() { /* keep fallback background */ });
+    })();
+
+    (function app() {
+      var btnAsr = document.getElementById('btn-asr');
+      var btnSign = document.getElementById('btn-sign');
+      var btnSettings = document.getElementById('btn-settings');
+      var statusEl = document.getElementById('status');
+      var cameraBg = document.getElementById('camera-bg');
+      var bars = Array.prototype.slice.call(document.querySelectorAll('#volume span'));
+
+      var translationOn = false;
+      function setStatus(t) { statusEl.textContent = t || ''; }
+      function setTranslationButtonVisibility() { btnSettings.style.display = 'block'; }
+
+      function setBars(level) {
+        var active = Math.max(0, Math.min(bars.length, Math.round(level * bars.length)));
+        bars.forEach(function(bar, i) {
+          if (i < active) {
+            bar.style.background = 'linear-gradient(to top, rgba(140,230,255,0.98), rgba(220,250,255,0.98))';
+            bar.style.opacity = '0.98';
+          } else {
+            bar.style.background = 'rgba(182,188,198,0.92)';
+            bar.style.opacity = '0.96';
+          }
+        });
+      }
+
+      // ASR — one phrase per pause (see ASR/src/web_realtime_remote.py); no overlapping POSTs while speaking.
+      var ASR_URL = (typeof window !== 'undefined' && window.HOLOASSIST_ASR_URL) || 'https://thedeezat-asr-hearing-impaired-api.hf.space/audio';
+      // NMT → Italian: default HF Space; override with HOLOASSIST_NMT_URL; use HOLOASSIST_NMT_API_KEY if the Space requires it.
+      var NMT_URL = (typeof window !== 'undefined' && window.HOLOASSIST_NMT_URL) || 'https://marconolimits-nmt.hf.space/translate';
+      var NMT_API_KEY = (typeof window !== 'undefined' && window.HOLOASSIST_NMT_API_KEY) || '';
+      var NMT_TARGET_LANG = (typeof window !== 'undefined' && window.HOLOASSIST_NMT_TARGET_LANG) || 'it';
+      // false (default): translate entire caption (all words shown). true: only the latest ASR phrase (latestText).
+      var TRANSLATE_LATEST_PHRASE_ONLY = !!(typeof window !== 'undefined' && window.HOLOASSIST_TRANSLATE_LATEST_ONLY);
+      var asrStream = null, asrCtx = null, asrProcessor = null, asrSource = null, asrTimer = 0;
+      var sampleRate = 16000, buffer = [], rmsSamples = [], isSpeaking = false, lastSpeechAt = 0, noiseRms = 0.01;
+      var hasSpeechInBuffer = false, asrRunning = false, isSending = false, latestText = '', fullTranscript = '';
+      var MIN_NOISE = 0.006, SPEECH_MULT = 2.6, SILENCE_MS = 850, MAX_SECONDS = 28;
+      var asrFlushPending = false;
+      var lastAcceptedText = '';
+      var hasReceivedAsrResult = false;
+      var hasReceivedSignResult = false;
+      var translateRequestToken = 0;
+      var translateDebounceTimer = null;
+      var TRANSLATE_DEBOUNCE_MS = 340;
+      var nmtAbortController = null;
+      var asrReadyToSpeak = false;
+      var asrFirstApiRoundTripDone = false;
+
+      function normalizeCase(text) {
+        if (!text) return '';
+        var t = text.trim();
+        if (t.toUpperCase() === t && /[A-Z]/.test(t)) t = t.toLowerCase();
+        return t.charAt(0).toUpperCase() + t.slice(1);
+      }
+      function cleanPrefix(text) {
+        if (!text) return '';
+        return text.trim().replace(/^(thank you[\s,!.?:-]*)+/i, '').trim();
+      }
+      function float32ToArrayBuffer(samples) {
+        var ab = new ArrayBuffer(samples.length * 4);
+        var dv = new DataView(ab);
+        for (var i = 0; i < samples.length; i++) dv.setFloat32(i * 4, samples[i], true);
+        return ab;
+      }
+      function extractText(payload) {
+        if (!payload) return '';
+        if (typeof payload === 'string') return payload.trim();
+        return (payload.text || payload.transcript || payload.transcription || payload.result || '').toString().trim();
+      }
+      function shouldAcceptPhrase(nextText) {
+        var next = (nextText || '').trim();
+        if (!next) return false;
+        if (next === (lastAcceptedText || '').trim()) return false;
+        return true;
+      }
+      function abortPendingTranslation() {
+        if (translateDebounceTimer) {
+          clearTimeout(translateDebounceTimer);
+          translateDebounceTimer = null;
+        }
+        if (nmtAbortController) {
+          try { nmtAbortController.abort(); } catch (_) {}
+          nmtAbortController = null;
+        }
+      }
+
+      var signLastHistory = '';
+      var signLastBottomLine = '';
+      var signLastServerPayload = null;
+
+      function getSignCaptionBlock() {
+        var t = (signLastHistory || '').trim();
+        var b = (signLastBottomLine || '').trim();
+        if (t && b) return t + '\n' + b;
+        return (t || b || '').trim();
+      }
+
+      function getCaptionDisplayText() {
+        if (asrRunning) return (fullTranscript || latestText || '').trim();
+        if (signRunning) return getSignCaptionBlock() || (lastSignText || '').trim();
+        return (latestText || '').trim();
+      }
+
+      /** Text sent to NMT: full caption by default, or latest phrase only if HOLOASSIST_TRANSLATE_LATEST_ONLY. */
+      function getTranslationSourceText() {
+        if (asrRunning) {
+          if (TRANSLATE_LATEST_PHRASE_ONLY) return (latestText || '').trim();
+          return (fullTranscript || latestText || '').trim();
+        }
+        if (signRunning) return (signLastHistory || '').trim();
+        return (latestText || '').trim();
+      }
+
+      function applyTranslatedCaption(translated, reqId) {
+        if (reqId !== translateRequestToken) return;
+        var cap = getCaptionDisplayText();
+        if (!cap) return;
+        setStatus(cap + '\nTranslated (IT): ' + translated);
+      }
+
+      async function translateText(text, reqId) {
+        if (!translationOn || !text || !NMT_URL) return text;
+        if (nmtAbortController) {
+          try { nmtAbortController.abort(); } catch (_) {}
+          nmtAbortController = null;
+        }
+        var ctrl = new AbortController();
+        nmtAbortController = ctrl;
+        try {
+          var headers = { 'Content-Type': 'application/json' };
+          if (NMT_API_KEY) headers['X-API-Key'] = NMT_API_KEY;
+          var body = { text: text, target_language: NMT_TARGET_LANG };
+          var res = await fetch(NMT_URL, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(body),
+            signal: ctrl.signal,
+            priority: 'low'
+          });
+          if (reqId !== translateRequestToken) return text;
+          if (!res.ok) {
+            console.warn('[NMT] HTTP', res.status);
+            return text;
+          }
+          var data = await res.json();
+          if (reqId !== translateRequestToken) return text;
+          var out = '';
+          if (data && typeof data === 'object') {
+            if (Array.isArray(data.data) && data.data.length && data.data[0] != null) {
+              out = String(data.data[0]).trim();
+            } else {
+              out = (data.translation || data.translated_text || data.result || data.text || '').toString().trim();
+            }
+          }
+          return out || text;
+        } catch (e) {
+          if (e && (e.name === 'AbortError' || e.code === 20)) return text;
+          console.warn('[NMT] translate failed:', e);
+          return text;
+        } finally {
+          if (nmtAbortController === ctrl) nmtAbortController = null;
+        }
+      }
+
+      function requestTranslationNow() {
+        if (!translationOn || !NMT_URL) return;
+        var src = getTranslationSourceText();
+        if (!src) {
+          setStatus('No text to translate yet. Use ASR or Sign first.');
+          return;
+        }
+        if (translateDebounceTimer) {
+          clearTimeout(translateDebounceTimer);
+          translateDebounceTimer = null;
+        }
+        var reqId = ++translateRequestToken;
+        translateText(src, reqId).then(function(translated) {
+          if (reqId !== translateRequestToken) return;
+          if (!translated || !String(translated).trim()) {
+            setStatus((getCaptionDisplayText() || getTranslationSourceText() || '') + '\nTranslation failed. Check NMT API / HOLOASSIST_NMT_API_KEY.');
+            return;
+          }
+          applyTranslatedCaption(translated, reqId);
+        });
+      }
+
+      function scheduleTranslation() {
+        if (!translationOn || (!asrRunning && !signRunning)) return;
+        clearTimeout(translateDebounceTimer);
+        translateDebounceTimer = setTimeout(function() {
+          translateDebounceTimer = null;
+          if (!translationOn || (!asrRunning && !signRunning)) return;
+          var t = getTranslationSourceText();
+          if (!t) return;
+          var reqId = ++translateRequestToken;
+          translateText(t, reqId).then(function(translated) {
+            if (reqId !== translateRequestToken) return;
+            applyTranslatedCaption(translated, reqId);
+          });
+        }, TRANSLATE_DEBOUNCE_MS);
+      }
+      async function sendAsr() {
+        if (isSending) return;
+        if (!buffer.length || !hasSpeechInBuffer) return;
+        var minSamples = Math.floor(sampleRate * 0.25);
+        if (buffer.length < minSamples) return;
+
+        var samples = buffer.slice();
+        buffer = [];
+        hasSpeechInBuffer = false;
+
+        var maxSamples = Math.floor(MAX_SECONDS * sampleRate);
+        if (samples.length > maxSamples) samples = samples.slice(samples.length - maxSamples);
+
+        isSending = true;
+        var isFirstTrip = !asrFirstApiRoundTripDone;
+        try {
+          var res = await fetch(ASR_URL, {
+            method: 'POST',
+            headers: { 'X-Sample-Rate': String(sampleRate), 'Content-Type': 'application/octet-stream' },
+            body: float32ToArrayBuffer(samples),
+            priority: 'high'
+          });
+          if (!res.ok) {
+            if (asrRunning) setStatus('ASR request failed — speak again.');
+            return;
+          }
+          if (isFirstTrip) asrFirstApiRoundTripDone = true;
+          if (!asrReadyToSpeak) {
+            asrReadyToSpeak = true;
+            hasReceivedAsrResult = true;
+          }
+          var text = '';
+          try {
+            var asrJson = await res.json();
+            text = extractText(asrJson);
+          } catch (_) {
+            var asrRaw = await res.text();
+            text = extractText(asrRaw);
+          }
+          text = cleanPrefix(text);
+          if (!text) {
+            if (asrRunning && fullTranscript) setStatus(fullTranscript);
+            else if (asrRunning) setStatus('Listening...');
+            return;
+          }
+          var seg = normalizeCase(text);
+          if (!shouldAcceptPhrase(seg)) {
+            if (asrRunning && fullTranscript) setStatus(fullTranscript);
+            else if (asrRunning) setStatus('Listening...');
+            return;
+          }
+          lastAcceptedText = seg;
+          latestText = seg;
+          if (!fullTranscript) fullTranscript = seg;
+          else fullTranscript = fullTranscript + ' ' + seg;
+          hasReceivedAsrResult = true;
+          setStatus(fullTranscript);
+          if (translationOn) scheduleTranslation();
+        } catch (e) {
+          console.warn('[ASR] failed:', e);
+          if (asrRunning && isFirstTrip) setStatus('Connection failed — check network.');
+        } finally {
+          isSending = false;
+          if (asrFlushPending && asrRunning) {
+            asrFlushPending = false;
+            var ms = Math.floor(sampleRate * 0.25);
+            if (buffer.length >= ms && hasSpeechInBuffer) sendAsr();
+          }
+        }
+      }
+      async function startAsr() {
+        asrStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        asrCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        sampleRate = asrCtx.sampleRate;
+        asrSource = asrCtx.createMediaStreamSource(asrStream);
+        asrProcessor = asrCtx.createScriptProcessor(4096, 1, 1);
+        asrProcessor.onaudioprocess = function(e) {
+          if (!asrRunning) return;
+          var input = e.inputBuffer.getChannelData(0);
+          for (var i = 0; i < input.length; i++) {
+            buffer.push(input[i]);
+            rmsSamples.push(input[i]);
+            if (rmsSamples.length > 3200) rmsSamples.shift();
+          }
+          while (buffer.length > Math.floor(MAX_SECONDS * sampleRate)) buffer.shift();
+        };
+        asrSource.connect(asrProcessor);
+        asrProcessor.connect(asrCtx.destination);
+
+        asrRunning = true;
+        btnAsr.textContent = 'Stop ASR . On';
+        btnAsr.classList.add('active');
+        setStatus('Listening...');
+        isSpeaking = false; lastSpeechAt = 0; noiseRms = 0.01; hasSpeechInBuffer = false; asrFlushPending = false;
+        lastAcceptedText = ''; fullTranscript = ''; latestText = ''; hasReceivedAsrResult = false; asrReadyToSpeak = false; asrFirstApiRoundTripDone = false;
+        setTranslationButtonVisibility();
+
+        if (asrTimer) clearInterval(asrTimer);
+        asrTimer = setInterval(function() {
+          if (!asrRunning || rmsSamples.length === 0) return;
+          var sum = 0;
+          for (var i = 0; i < rmsSamples.length; i++) sum += rmsSamples[i] * rmsSamples[i];
+          var rms = Math.sqrt(sum / rmsSamples.length);
+          setBars(Math.min(1, rms * 6));
+
+          var now = Date.now();
+          var th = Math.max(MIN_NOISE, noiseRms * SPEECH_MULT);
+          if (rms > th) {
+            if (!isSpeaking) isSpeaking = true;
+            lastSpeechAt = now;
+            hasSpeechInBuffer = true;
+          } else {
+            noiseRms = 0.98 * noiseRms + 0.02 * rms;
+            if (isSpeaking && (now - lastSpeechAt) > SILENCE_MS) {
+              isSpeaking = false;
+              if (isSending) asrFlushPending = true;
+              else sendAsr();
+            }
+          }
+        }, 200);
+      }
+      async function stopAsr() {
+        asrRunning = false;
+        abortPendingTranslation();
+        translateRequestToken += 1;
+        btnAsr.textContent = 'Start ASR';
+        btnAsr.classList.remove('active');
+        if (asrTimer) { clearInterval(asrTimer); asrTimer = 0; }
+        var minSamples = Math.floor(sampleRate * 0.25);
+        for (var wait = 0; wait < 80 && isSending; wait++) await new Promise(function(r) { setTimeout(r, 50); });
+        try {
+          if (buffer.length >= minSamples && hasSpeechInBuffer) await sendAsr();
+        } catch (_) {}
+        setBars(0);
+        if (asrProcessor && asrSource) { try { asrSource.disconnect(); asrProcessor.disconnect(); } catch (_) {} }
+        asrProcessor = null; asrSource = null;
+        if (asrCtx) await asrCtx.close();
+        asrCtx = null;
+        if (asrStream) asrStream.getTracks().forEach(function(t) { t.stop(); });
+        asrStream = null;
+        latestText = '';
+        fullTranscript = '';
+        lastAcceptedText = '';
+        hasReceivedAsrResult = false;
+        asrReadyToSpeak = false;
+        asrFirstApiRoundTripDone = false;
+        translationOn = false;
+        btnSettings.textContent = 'Language translation';
+        btnSettings.classList.remove('active');
+        setTranslationButtonVisibility();
+        setStatus('Ready.');
+      }
+      btnAsr.addEventListener('click', async function() {
+        try {
+          if (asrRunning) {
+            await stopAsr();
+          } else {
+            if (signRunning) stopSign();
+            await startAsr();
+          }
+        }
+        catch (e) { console.error(e); await stopAsr(); setStatus('ASR start failed.'); }
+      });
+
+      // Sign Language — MediaPipe in-browser; infer only when hand is large & confident enough.
+      // Aligns with API defaults: stable_frames 6, min_conf 0.65, noise_frames 4, pause_ms 450, word_pause_ms 1800.
+      var SIGN_API_BASE = 'http://127.0.0.1:8000';
+      var SIGN_INFER_URL = SIGN_API_BASE.replace(/\/+$/, '') + '/infer';
+      var SIGN_INFER_INTERVAL_MS = 154;
+      var SIGN_MIN_HAND_AREA_FRAC = 0.05;
+      var SIGN_MIN_HANDEDNESS_SCORE = 0.65;
+      var SIGN_CROP_SMOOTH = 0.35;
+      var SIGN_TOP_INSTRUCTION = 'Strict mode: hand 35-55% frame, centered, fingers visible, palm forward, steady.';
+      var signRunning = false, signStream = null, signVideo = null, signTimer = 0;
+      var signCanvas = document.createElement('canvas');
+      var signCtx = signCanvas.getContext('2d', { willReadFrequently: true });
+      var signRunToken = 0;
+      var lastSignText = '';
+      var signFirstApiRoundTripDone = false;
+      var handLandmarkerInstance = null;
+      var signMpTs = 0;
+      var signInferBusy = false;
+      var signTopBarEl = document.getElementById('sign-top-bar');
+      var signInstructionEl = document.getElementById('sign-instruction');
+      var signLiveHintEl = document.getElementById('sign-live-hint');
+      var signHoldStart = null;
+      var signLockedAt = null;
+      var SIGN_HOLD_TARGET_MS = 1100;
+      var SIGN_DROP_HINT_MS = 450;
+      var signCropSmooth = null;
+
+      function setSignLiveHintVisible(on) {
+        if (signTopBarEl) signTopBarEl.hidden = !on;
+        if (!on) {
+          if (signInstructionEl) signInstructionEl.textContent = '';
+          if (signLiveHintEl) {
+            signLiveHintEl.hidden = true;
+            signLiveHintEl.textContent = '';
+          }
+        }
+      }
+
+      function setSignLiveHintLine(text) {
+        if (!signLiveHintEl || !signRunning) return;
+        signLiveHintEl.hidden = !text;
+        signLiveHintEl.textContent = text || '';
+      }
+
+      function resetSignTiming() {
+        signHoldStart = null;
+        signLockedAt = null;
+      }
+
+      function handednessScoreForHand(result, idx) {
+        var h = result && result.handednesses;
+        if (!h || !h[idx] || !h[idx][0]) return null;
+        var s = h[idx][0].score;
+        return typeof s === 'number' ? s : null;
+      }
+
+      function updateSignLiveHint(hasHandGood, hasRawLandmarks) {
+        if (!signRunning) return;
+        var now = performance.now();
+        if (!hasRawLandmarks) {
+          if (signHoldStart !== null || signLockedAt !== null) resetSignTiming();
+          setSignLiveHintLine('Show your hand.');
+          return;
+        }
+        if (!hasHandGood) {
+          if (signHoldStart !== null || signLockedAt !== null) resetSignTiming();
+          setSignLiveHintLine('Adjust pose: center hand, show full fingers, palm forward, hold still.');
+          return;
+        }
+        if (signHoldStart === null) signHoldStart = now;
+        var held = now - signHoldStart;
+        if (held < SIGN_HOLD_TARGET_MS) {
+          var cur = (held / 1000).toFixed(2);
+          var tgt = (SIGN_HOLD_TARGET_MS / 1000).toFixed(2);
+          setSignLiveHintLine('Hold steady: ' + cur + 's / ' + tgt + 's');
+          return;
+        }
+        if (signLockedAt === null) signLockedAt = now;
+        var sinceLock = now - signLockedAt;
+        var remain = Math.max(0, SIGN_DROP_HINT_MS - sinceLock);
+        if (remain <= 0) {
+          setSignLiveHintLine('Remove hand now.');
+        } else {
+          setSignLiveHintLine('Remove hand — ' + (remain / 1000).toFixed(2) + 's');
+        }
+      }
+
+      function formatSignConfidence(c) {
+        if (c == null || c === '') return '';
+        var n = Number(c);
+        if (isNaN(n)) return '';
+        if (n >= 0 && n <= 1) return (n * 100).toFixed(1) + '%';
+        return n.toFixed(1) + '%';
+      }
+
+      function renderSignCaption(data) {
+        if (!signRunning) return;
+        if (!data || typeof data !== 'object') return;
+        if (data.text != null) {
+          var nt = String(data.text).trim();
+          if (!signLastHistory || nt.length >= signLastHistory.length) signLastHistory = nt;
+        }
+        var letter = data.letter != null && String(data.letter).trim() !== '' ? String(data.letter).trim() : '';
+        var conf = typeof data.confidence === 'number' ? data.confidence : null;
+        var hint = data.status_hint != null ? String(data.status_hint).trim() : '';
+        var bottom;
+        if (letter) {
+          bottom = 'Letter: ' + letter + (conf != null ? ' — ' + formatSignConfidence(conf) : '');
+        } else {
+          bottom = hint || '...';
+        }
+        signLastBottomLine = bottom;
+        lastSignText = signLastHistory;
+        signLastServerPayload = data;
+        var topLine = signLastHistory || '…';
+        setStatus(topLine + '\n' + bottom);
+        if (translationOn && signLastHistory) scheduleTranslation();
+      }
+
+      function bboxFromLandmarks(lm, w, h) {
+        var minX = w, minY = h, maxX = 0, maxY = 0;
+        for (var i = 0; i < lm.length; i++) {
+          var x = lm[i].x * w;
+          var y = lm[i].y * h;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+        var bw = maxX - minX, bh = maxY - minY;
+        var pad = Math.max(bw, bh) * 0.22;
+        minX = Math.max(0, minX - pad);
+        minY = Math.max(0, minY - pad);
+        maxX = Math.min(w, maxX + pad);
+        maxY = Math.min(h, maxY + pad);
+        return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+      }
+
+      function squareCropFromHandBox(box, w, h) {
+        var cx = box.x + box.w / 2;
+        var cy = box.y + box.h / 2;
+        var side = Math.max(box.w, box.h, Math.min(w, h) * 0.28);
+        side = Math.min(side, Math.min(w, h));
+        var sx = Math.floor(cx - side / 2);
+        var sy = Math.floor(cy - side / 2);
+        sx = Math.max(0, Math.min(sx, w - side));
+        sy = Math.max(0, Math.min(sy, h - side));
+        return { sx: sx, sy: sy, side: Math.max(32, Math.floor(side)) };
+      }
+
+      async function ensureHandLandmarker() {
+        if (handLandmarkerInstance) return handLandmarkerInstance;
+        var mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm');
+        var FilesetResolver = mod.FilesetResolver;
+        var HandLandmarker = mod.HandLandmarker;
+        var wasm = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+        var modelUrl = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+        try {
+          handLandmarkerInstance = await HandLandmarker.createFromOptions(wasm, {
+            baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' },
+            runningMode: 'VIDEO',
+            numHands: 2
+          });
+        } catch (e1) {
+          handLandmarkerInstance = await HandLandmarker.createFromOptions(wasm, {
+            baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' },
+            runningMode: 'VIDEO',
+            numHands: 2
+          });
+        }
+        return handLandmarkerInstance;
+      }
+
+      async function sendSignFrame() {
+        if (!signRunning || !signVideo || signVideo.videoWidth <= 0) return;
+        if (!handLandmarkerInstance) return;
+        var currentToken = signRunToken;
+        signMpTs += 40;
+        var result = handLandmarkerInstance.detectForVideo(signVideo, signMpTs);
+        var lms = result && (result.landmarks || result.handLandmarks);
+        var hasRaw = !!(lms && lms.length);
+        var w = signVideo.videoWidth, h = signVideo.videoHeight;
+        var lm = hasRaw ? lms[0] : null;
+        var box = lm ? bboxFromLandmarks(lm, w, h) : null;
+        var areaFrac = box && w * h > 0 ? (box.w * box.h) / (w * h) : 0;
+        var hScore = handednessScoreForHand(result, 0);
+        var handednessOk = hScore == null || hScore >= SIGN_MIN_HANDEDNESS_SCORE;
+        var hasHandGood = !!(box && box.w >= 8 && box.h >= 8 && areaFrac >= SIGN_MIN_HAND_AREA_FRAC && handednessOk);
+        updateSignLiveHint(hasHandGood, hasRaw);
+        if (!hasHandGood || signInferBusy) return;
+        signInferBusy = true;
+        try {
+          var crop = squareCropFromHandBox(box, w, h);
+          if (signCropSmooth && typeof signCropSmooth.sx === 'number') {
+            var a = SIGN_CROP_SMOOTH;
+            var inv = 1 - a;
+            crop.sx = Math.round(signCropSmooth.sx * inv + crop.sx * a);
+            crop.sy = Math.round(signCropSmooth.sy * inv + crop.sy * a);
+            crop.side = Math.max(32, Math.round(signCropSmooth.side * inv + crop.side * a));
+            crop.sx = Math.max(0, Math.min(crop.sx, w - crop.side));
+            crop.sy = Math.max(0, Math.min(crop.sy, h - crop.side));
+          }
+          signCropSmooth = { sx: crop.sx, sy: crop.sy, side: crop.side };
+          signCanvas.width = 224;
+          signCanvas.height = 224;
+          signCtx.drawImage(signVideo, crop.sx, crop.sy, crop.side, crop.side, 0, 0, 224, 224);
+          var blob = await new Promise(function(resolve) { signCanvas.toBlob(resolve, 'image/jpeg', 0.88); });
+          if (!blob) return;
+          var form = new FormData();
+          form.append('image', blob, 'frame.jpg');
+          form.append('spell', 'true');
+          form.append('session_id', 'web-sign-session-' + String(currentToken));
+          var res = await fetch(SIGN_INFER_URL, { method: 'POST', body: form });
+          if (!res.ok) {
+            if (signLastServerPayload) renderSignCaption(signLastServerPayload);
+            return;
+          }
+          var data = await res.json();
+          if (!signRunning || currentToken !== signRunToken) return;
+          if (!signFirstApiRoundTripDone) signFirstApiRoundTripDone = true;
+          hasReceivedSignResult = true;
+          renderSignCaption(data);
+        } catch (e) {
+          console.warn('[Sign] infer failed:', e);
+          if (signLastServerPayload) renderSignCaption(signLastServerPayload);
+        } finally {
+          signInferBusy = false;
+        }
+      }
+      async function startSign() {
+        signRunToken += 1;
+        lastSignText = '';
+        signLastHistory = '';
+        signLastBottomLine = '';
+        signLastServerPayload = null;
+        hasReceivedSignResult = false;
+        signFirstApiRoundTripDone = false;
+        signMpTs = 0;
+        signCropSmooth = null;
+        signStream = cameraBg && cameraBg.srcObject ? cameraBg.srcObject : null;
+        if (!signStream) {
+          signStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+        signVideo = document.createElement('video');
+        signVideo.playsInline = true;
+        signVideo.muted = true;
+        signVideo.srcObject = signStream;
+        await signVideo.play();
+        setStatus('Loading hand detection…');
+        try {
+          await ensureHandLandmarker();
+        } catch (e) {
+          console.error(e);
+          setStatus('Hand detection failed to load (network or browser). Check console.');
+          if (signVideo) { try { signVideo.pause(); } catch (_) {} signVideo.srcObject = null; }
+          signVideo = null;
+          if (signStream && (!cameraBg || signStream !== cameraBg.srcObject)) {
+            signStream.getTracks().forEach(function(t) { t.stop(); });
+          }
+          signStream = null;
+          btnSign.textContent = 'Start Sign Language';
+          btnSign.classList.remove('active');
+          setSignLiveHintVisible(false);
+          return;
+        }
+        signRunning = true;
+        resetSignTiming();
+        btnSign.textContent = 'Stop Sign Language . On';
+        btnSign.classList.add('active');
+        setSignLiveHintVisible(true);
+        if (signInstructionEl) signInstructionEl.textContent = SIGN_TOP_INSTRUCTION;
+        setSignLiveHintLine('Show your hand.');
+        setStatus('');
+        if (signTimer) clearInterval(signTimer);
+        signTimer = setInterval(function() { sendSignFrame(); }, SIGN_INFER_INTERVAL_MS);
+      }
+      function stopSign() {
+        signRunToken += 1;
+        signRunning = false;
+        resetSignTiming();
+        setSignLiveHintVisible(false);
+        btnSign.textContent = 'Start Sign Language';
+        btnSign.classList.remove('active');
+        if (signTimer) { clearInterval(signTimer); signTimer = 0; }
+        if (signVideo) { try { signVideo.pause(); } catch (_) {} signVideo.srcObject = null; }
+        signVideo = null;
+        if (signStream && (!cameraBg || signStream !== cameraBg.srcObject)) {
+          signStream.getTracks().forEach(function(t) { t.stop(); });
+        }
+        signStream = null;
+        lastSignText = '';
+        signLastHistory = '';
+        signLastBottomLine = '';
+        signLastServerPayload = null;
+        hasReceivedSignResult = false;
+        signMpTs = 0;
+        signCropSmooth = null;
+        setStatus('Ready.');
+      }
+      btnSign.addEventListener('click', async function() {
+        try {
+          if (signRunning) {
+            stopSign();
+          } else {
+            if (asrRunning) await stopAsr();
+            await startSign();
+          }
+        }
+        catch (e) { console.error(e); stopSign(); setStatus('Sign camera failed.'); }
+      });
+
+      // Settings button -> translation toggle
+      btnSettings.classList.add('translation');
+      btnSettings.textContent = 'Language translation';
+      setTranslationButtonVisibility();
+      btnSettings.addEventListener('click', function() {
+        if (!asrRunning && !signRunning) return;
+        translationOn = !translationOn;
+        if (!translationOn) {
+          translateRequestToken += 1;
+          abortPendingTranslation();
+        }
+        btnSettings.textContent = translationOn ? 'Language translation . On' : 'Language translation';
+        btnSettings.classList.toggle('active', translationOn);
+        if (translationOn) {
+          requestTranslationNow();
+        } else {
+          setStatus(getCaptionDisplayText() || 'Ready.');
+        }
+      });
+
+      document.getElementById('btn-clear-caption').addEventListener('click', function() {
+        translateRequestToken += 1;
+        abortPendingTranslation();
+        fullTranscript = '';
+        latestText = '';
+        lastAcceptedText = '';
+        lastSignText = '';
+        signLastHistory = '';
+        signLastBottomLine = '';
+        signLastServerPayload = null;
+        if (asrRunning) setStatus('Listening...');
+        else if (signRunning) setStatus('');
+        else setStatus('Ready.');
+      });
+    })();
+  </script>
+</body>
+</html>
