@@ -45,12 +45,15 @@ Use **AR Foundation PV** only:
 | `ARCameraManager` + `TryAcquireLatestCpuImage` → `XRCpuImage` | `WebCamTexture` |
 | Same path as this repo: `HololensPvCpuImageSource.cs` | Raw WinRT / MediaCapture-only paths for this pipeline |
 
-**Scene (XR Main Camera):**
+**Scene wiring (Mixed Reality template + AR Foundation):**
 
-- `Camera`
-- `ARCameraManager` (required) -done
-- `ARCameraBackground` (optional; typical for passthrough)
-- `HololensPvCpuImageSource` (assign the same `ARCameraManager` or leave empty for `FindObjectOfType`)-done
+Packages alone are not enough. The **locatable / PV camera** must be the **XR rig camera** under **`XR Origin (XR Rig)`** — not a second `Camera` or `ARCameraManager` on a root “bootstrap” object.
+
+- **`XR Origin (XR Rig)`** → **Camera Offset** (or equivalent) → **Main Camera** (`MainCamera` tag).
+- On **that** `Main Camera` only: `Camera`, `TrackedPoseDriver` (or XRI rig driver), **`ARCameraManager`**, optional **`ARCameraBackground`**, **`LocatableCameraArProjection`** (for hand ROI projection).
+- **`ARSession`**: add a GameObject with `ARSession` in the scene, or let `LocatableCameraArProjection` create one at runtime (`AR Session (Auto)`).
+- **`HololensPvCpuImageSource`**: may live on a separate GameObject (e.g. `[BOOTSTRAP]`), but its **`arCameraManager` reference must point to the `ARCameraManager` on the **XR Main Camera** above — not a duplicate `ARCameraManager` on the same object as bootstrap logic. A duplicate `Camera` + `ARCameraManager` on a non‑XR object is a common cause of “subsystem not running” / wrong capture.
+- **`SignInferenceClient`**: set **`pvCpuImageSource`** to that `HololensPvCpuImageSource` (or rely on `FindObjectOfType`, which is fragile if multiple instances exist).
 
 **UWP capabilities** (Project Settings → Player → Publishing Settings — this repo’s `ProjectSettings.asset` already enables):
 

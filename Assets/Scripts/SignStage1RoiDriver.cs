@@ -3,6 +3,8 @@ using UnityEngine;
 /// <summary>
 /// Stage 1 only: reads PV camera frame, computes hand ROI, and logs ROI validity metrics.
 /// No API/inference requests are made by this component.
+/// <para>On HoloLens/UWP do not use <see cref="UnityEngine.WebCamTexture"/> here — it uses generic webcam enumeration (Media Foundation)
+/// and can fight <c>ARCameraManager</c> / OpenXR locatable camera. WebCam is auto-disabled on device builds; use Editor webcam tests or assign <see cref="overrideSource"/>.</para>
 /// </summary>
 [DefaultExecutionOrder(-34)]
 public class SignStage1RoiDriver : MonoBehaviour
@@ -23,6 +25,19 @@ public class SignStage1RoiDriver : MonoBehaviour
 
     private WebCamTexture _webCamTexture;
     private int _frameCounter;
+
+    private void Awake()
+    {
+#if UNITY_WSA && !UNITY_EDITOR
+        if (useWebCamTexture)
+        {
+            useWebCamTexture = false;
+            Debug.LogWarning(
+                "[SignStage1RoiDriver] WebCamTexture disabled on UWP (avoid MF/webcam enumeration vs AR Foundation PV). " +
+                "Test Stage1 in Editor, or assign overrideSource.");
+        }
+#endif
+    }
 
     private void Start()
     {
