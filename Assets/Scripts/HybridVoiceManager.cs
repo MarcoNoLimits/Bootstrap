@@ -191,10 +191,11 @@ public sealed class HybridVoiceManager : IDisposable
             bool noTranscriptTooLong = now - _lastTranscriptAt >= 9.0f;
             if (userSpeakingRecently && noTranscriptTooLong)
             {
+                // Do not auto-deactivate API ASR on silence/transcript stalls.
+                // Keep listening and only surface a non-fatal hint.
                 MainThreadDispatcher.RunOnMainThread(() =>
-                    OnError?.Invoke(AsrFallbackUserMessage));
-                SwitchToDictationFallback();
-                yield break;
+                    OnError?.Invoke("ASR is still listening. No transcript yet; keep speaking clearly."));
+                _lastTranscriptAt = now;
             }
         }
     }

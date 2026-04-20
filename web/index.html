@@ -225,8 +225,18 @@
       var bars = Array.prototype.slice.call(document.querySelectorAll('#volume span'));
 
       var translationOn = false;
+      var asrItalianToEnglishOn = false;
       function setStatus(t) { statusEl.textContent = t || ''; }
       function setTranslationButtonVisibility() { btnSettings.style.display = 'block'; }
+      function refreshSettingsButtonUI() {
+        if (asrRunning) {
+          btnSettings.textContent = asrItalianToEnglishOn ? 'Italian -> English ASR . On' : 'Italian -> English ASR';
+          btnSettings.classList.toggle('active', asrItalianToEnglishOn);
+          return;
+        }
+        btnSettings.textContent = translationOn ? 'Language translation . On' : 'Language translation';
+        btnSettings.classList.toggle('active', translationOn);
+      }
 
       function setBars(level) {
         var active = Math.max(0, Math.min(bars.length, Math.round(level * bars.length)));
@@ -242,7 +252,8 @@
       }
 
       // ASR — one phrase per pause (see ASR/src/web_realtime_remote.py); no overlapping POSTs while speaking.
-      var ASR_URL = (typeof window !== 'undefined' && window.HOLOASSIST_ASR_URL) || 'https://thedeezat-asr-hearing-impaired-api.hf.space/audio';
+      var ASR_URL_EN = (typeof window !== 'undefined' && (window.HOLOASSIST_ASR_URL_EN || window.HOLOASSIST_ASR_URL)) || 'https://thedeezat-asr-hearing-impaired-api.hf.space/audio';
+      var ASR_URL_IT_EN = (typeof window !== 'undefined' && window.HOLOASSIST_ASR_URL_IT_EN) || ASR_URL_EN;
       // NMT → Italian: default HF Space; override with HOLOASSIST_NMT_URL; use HOLOASSIST_NMT_API_KEY if the Space requires it.
       var NMT_URL = (typeof window !== 'undefined' && window.HOLOASSIST_NMT_URL) || 'https://marconolimits-nmt.hf.space/translate';
       var NMT_API_KEY = (typeof window !== 'undefined' && window.HOLOASSIST_NMT_API_KEY) || '';
@@ -263,6 +274,77 @@
       var nmtAbortController = null;
       var asrReadyToSpeak = false;
       var asrFirstApiRoundTripDone = false;
+      var localItalianRec = null;
+      var localItalianModeActive = false;
+      function getCurrentAsrUrl() { return ASR_URL_EN; }
+      function getSpeechRecognitionCtor() {
+        if (typeof window === 'undefined') return null;
+        return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+      }
+      function stopLocalItalianDictation() {
+        localItalianModeActive = false;
+        if (!localItalianRec) return;
+        try {
+          localItalianRec.onresult = null;
+          localItalianRec.onerror = null;
+          localItalianRec.onend = null;
+          localItalianRec.stop();
+        } catch (_) {}
+        localItalianRec = null;
+      }
+      function startLocalItalianDictation() {
+        var Ctor = getSpeechRecognitionCtor();
+        if (!Ctor) return false;
+        stopLocalItalianDictation();
+        localItalianModeActive = true;
+        localItalianRec = new Ctor();
+        localItalianRec.lang = 'it-IT';
+        localItalianRec.continuous = true;
+        localItalianRec.interimResults = true;
+        localItalianRec.maxAlternatives = 1;
+        localItalianRec.onresult = function(ev) {
+          if (!asrRunning || !localItalianModeActive) return;
+          var interim = '';
+          for (var i = ev.resultIndex; i < ev.results.length; i++) {
+            var r = ev.results[i];
+            var t = r && r[0] ? String(r[0].transcript || '').trim() : '';
+            if (!t) continue;
+            if (r.isFinal) {
+              var seg = normalizeCase(t);
+              if (shouldAcceptPhrase(seg)) {
+                lastAcceptedText = seg;
+                latestText = seg;
+                fullTranscript = fullTranscript ? (fullTranscript + ' ' + seg) : seg;
+                hasReceivedAsrResult = true;
+                setStatus(fullTranscript);
+                if (translationOn) scheduleTranslation();
+              }
+            } else {
+              interim = t;
+            }
+          }
+          if (interim && !fullTranscript) setStatus(interim);
+        };
+        localItalianRec.onerror = function(e) {
+          if (!asrRunning || !localItalianModeActive) return;
+          console.warn('[ASR local it-IT] failed:', e);
+          setStatus('Local Italian dictation failed. Switch off for English ASR.');
+        };
+        localItalianRec.onend = function() {
+          if (!asrRunning || !localItalianModeActive || !asrItalianToEnglishOn) return;
+          setTimeout(function() {
+            if (!asrRunning || !localItalianModeActive || !asrItalianToEnglishOn || !localItalianRec) return;
+            try { localItalianRec.start(); } catch (_) {}
+          }, 120);
+        };
+        try {
+          localItalianRec.start();
+          return true;
+        } catch (_) {
+          stopLocalItalianDictation();
+          return false;
+        }
+      }
 
       function normalizeCase(text) {
         if (!text) return '';
@@ -433,7 +515,7 @@
         isSending = true;
         var isFirstTrip = !asrFirstApiRoundTripDone;
         try {
-          var res = await fetch(ASR_URL, {
+          var res = await fetch(getCurrentAsrUrl(), {
             method: 'POST',
             headers: { 'X-Sample-Rate': String(sampleRate), 'Content-Type': 'application/octet-stream' },
             body: float32ToArrayBuffer(samples),
@@ -488,6 +570,26 @@
         }
       }
       async function startAsr() {
+        if (asrItalianToEnglishOn) {
+          asrRunning = true;
+          btnAsr.textContent = 'Stop ASR . On';
+          btnAsr.classList.add('active');
+          setBars(0);
+          setStatus('Listening (Italian local dictation)...');
+          isSpeaking = false; lastSpeechAt = 0; noiseRms = 0.01; hasSpeechInBuffer = false; asrFlushPending = false;
+          lastAcceptedText = ''; fullTranscript = ''; latestText = ''; hasReceivedAsrResult = false; asrReadyToSpeak = false; asrFirstApiRoundTripDone = false;
+          setTranslationButtonVisibility();
+          refreshSettingsButtonUI();
+          if (!startLocalItalianDictation()) {
+            asrRunning = false;
+            btnAsr.textContent = 'Start ASR';
+            btnAsr.classList.remove('active');
+            asrItalianToEnglishOn = false;
+            refreshSettingsButtonUI();
+            throw new Error('Local Italian dictation is not supported in this browser');
+          }
+          return;
+        }
         asrStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         asrCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
         sampleRate = asrCtx.sampleRate;
@@ -513,6 +615,7 @@
         isSpeaking = false; lastSpeechAt = 0; noiseRms = 0.01; hasSpeechInBuffer = false; asrFlushPending = false;
         lastAcceptedText = ''; fullTranscript = ''; latestText = ''; hasReceivedAsrResult = false; asrReadyToSpeak = false; asrFirstApiRoundTripDone = false;
         setTranslationButtonVisibility();
+        refreshSettingsButtonUI();
 
         if (asrTimer) clearInterval(asrTimer);
         asrTimer = setInterval(function() {
@@ -540,6 +643,7 @@
       }
       async function stopAsr() {
         asrRunning = false;
+        stopLocalItalianDictation();
         abortPendingTranslation();
         translateRequestToken += 1;
         btnAsr.textContent = 'Start ASR';
@@ -563,9 +667,9 @@
         hasReceivedAsrResult = false;
         asrReadyToSpeak = false;
         asrFirstApiRoundTripDone = false;
+        asrItalianToEnglishOn = false;
         translationOn = false;
-        btnSettings.textContent = 'Language translation';
-        btnSettings.classList.remove('active');
+        refreshSettingsButtonUI();
         setTranslationButtonVisibility();
         setStatus('Ready.');
       }
@@ -894,17 +998,30 @@
 
       // Settings button -> translation toggle
       btnSettings.classList.add('translation');
-      btnSettings.textContent = 'Language translation';
+      refreshSettingsButtonUI();
       setTranslationButtonVisibility();
-      btnSettings.addEventListener('click', function() {
+      btnSettings.addEventListener('click', async function() {
         if (!asrRunning && !signRunning) return;
+        if (asrRunning) {
+          var nextItalianMode = !asrItalianToEnglishOn;
+          try {
+            await stopAsr();
+            asrItalianToEnglishOn = nextItalianMode;
+            await startAsr();
+          } catch (e) {
+            console.error(e);
+            asrItalianToEnglishOn = false;
+            refreshSettingsButtonUI();
+            setStatus('Could not switch ASR mode.');
+          }
+          return;
+        }
         translationOn = !translationOn;
         if (!translationOn) {
           translateRequestToken += 1;
           abortPendingTranslation();
         }
-        btnSettings.textContent = translationOn ? 'Language translation . On' : 'Language translation';
-        btnSettings.classList.toggle('active', translationOn);
+        refreshSettingsButtonUI();
         if (translationOn) {
           requestTranslationNow();
         } else {
