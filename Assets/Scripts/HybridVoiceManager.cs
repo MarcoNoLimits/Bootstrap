@@ -1,6 +1,9 @@
 using System;
 using System.Collections;
 using UnityEngine;
+#if UNITY_WSA && !UNITY_EDITOR
+using System.Threading.Tasks;
+#endif
 
 /// <summary>
 /// Tries custom ASR HTTP API first (same contract as <see cref="HololensAsrManager"/>:
@@ -20,8 +23,12 @@ public sealed class HybridVoiceManager : IDisposable
     private readonly float _phraseEndSilenceSeconds;
     private readonly bool _forceLocalDictationOnly;
     private readonly bool _enableApiSilenceFallback;
+    private readonly bool _useItalianWinRtSpeech;
 
     private VoiceManager _dictation;
+#if UNITY_WSA && !UNITY_EDITOR
+    private ItalianWinRtSpeechRecognizer _italianWinRt;
+#endif
     private Coroutine _finalizeSentenceCo;
     private Coroutine _apiHealthWatchdogCo;
     private string _pendingTranslationText;
@@ -45,7 +52,8 @@ public sealed class HybridVoiceManager : IDisposable
         int fallbackAfterConsecutiveApiFailures = 5,
         float phraseEndSilenceSeconds = 0.9f,
         bool forceLocalDictationOnly = false,
-        bool enableApiSilenceFallback = false)
+        bool enableApiSilenceFallback = false,
+        bool useItalianWinRtSpeech = false)
     {
         _host = coroutineHost;
         _primaryApiUrl = primaryApiUrl != null ? primaryApiUrl.Trim() : string.Empty;
@@ -53,6 +61,7 @@ public sealed class HybridVoiceManager : IDisposable
         _phraseEndSilenceSeconds = Mathf.Clamp(phraseEndSilenceSeconds, 0.35f, 3f);
         _forceLocalDictationOnly = forceLocalDictationOnly;
         _enableApiSilenceFallback = enableApiSilenceFallback;
+        _useItalianWinRtSpeech = useItalianWinRtSpeech;
     }
 
     public void Start()
@@ -62,6 +71,13 @@ public sealed class HybridVoiceManager : IDisposable
         if (_forceLocalDictationOnly)
         {
             Debug.Log("[HybridVoice] Local dictation-only mode active.");
+#if UNITY_WSA && !UNITY_EDITOR
+            if (_useItalianWinRtSpeech)
+            {
+                StartItalianWinRt();
+                return;
+            }
+#endif
             StartDictationOnly();
             return;
         }
@@ -257,6 +273,40 @@ public sealed class HybridVoiceManager : IDisposable
         StartDictationOnly();
     }
 
+#if UNITY_WSA && !UNITY_EDITOR
+    private void StartItalianWinRt()
+    {
+        if (_italianWinRt != null)
+        {
+            return;
+        }
+
+        if (!ItalianWinRtSpeechRecognizer.IsItalianSpeechEngineAvailable())
+        {
+            Debug.LogWarning("[HybridVoice] it-IT speech engine not on device — Italian unavailable.");
+            OnError?.Invoke("Italian unavailable");
+            return;
+        }
+
+        _italianWinRt = new ItalianWinRtSpeechRecognizer();
+        _italianWinRt.OnListeningStarted += () => OnListeningStarted?.Invoke();
+        _italianWinRt.OnHypothesis += (p) => OnHypothesis?.Invoke(p);
+        _italianWinRt.OnSentenceCompleted += (t) => OnSentenceCompleted?.Invoke(t);
+        _italianWinRt.OnError += (e) => OnError?.Invoke(e);
+        _ = StartItalianWinRtAsync();
+    }
+
+    private async Task StartItalianWinRtAsync()
+    {
+        if (_italianWinRt == null || _disposed)
+        {
+            return;
+        }
+
+        await _italianWinRt.StartAsync();
+    }
+#endif
+
     private void StartDictationOnly()
     {
         if (_dictation != null) return;
@@ -294,6 +344,11 @@ public sealed class HybridVoiceManager : IDisposable
             HololensAsrManager.Instance.OnMicrophoneReady -= OnUnityMicReady;
             HololensAsrManager.Instance.StopAsr();
         }
+
+#if UNITY_WSA && !UNITY_EDITOR
+        _italianWinRt?.Dispose();
+        _italianWinRt = null;
+#endif
 
         _dictation?.Dispose();
         _dictation = null;

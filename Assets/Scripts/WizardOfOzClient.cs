@@ -65,6 +65,7 @@ public class WizardOfOzClient : MonoBehaviour
     private string _lastModeBanner = "";
     private bool _italianLocalAsrEnabled;
     private bool _asrActive;
+    public bool IsItalianLocalAsrEnabled => _italianLocalAsrEnabled;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void AutoStart()
@@ -218,6 +219,26 @@ public class WizardOfOzClient : MonoBehaviour
 #endif
     }
 
+    /// <summary>Subtitle while waiting for speech (Italian local ASR uses an explicit label).</summary>
+    private string ListeningIdleCaption()
+    {
+        return _italianLocalAsrEnabled ? "Listening For Italian ..." : "Listening...";
+    }
+
+    private string ListeningPartialCaption(string partial)
+    {
+        if (_italianLocalAsrEnabled)
+        {
+            return string.IsNullOrEmpty(partial)
+                ? "Listening For Italian ..."
+                : $"Listening For Italian ... {partial}";
+        }
+
+        return string.IsNullOrEmpty(partial)
+            ? "Listening…"
+            : $"Listening… {partial}";
+    }
+
     private void WireEvents()
     {
         if (_voice == null || _uiManager == null) return;
@@ -225,21 +246,21 @@ public class WizardOfOzClient : MonoBehaviour
         _voice.OnListeningStarted += () => MainThreadDispatcher.RunOnMainThread(() => {
             if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
-            _uiManager.UpdateText("Listening...");
+            _uiManager.UpdateText(ListeningIdleCaption());
         });
 
         _voice.OnHypothesis += (partial) => MainThreadDispatcher.RunOnMainThread(() => {
             if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
             if (!string.IsNullOrEmpty(partial)) {
-                _uiManager.UpdateText($"Listening… {partial}");
+                _uiManager.UpdateText(ListeningPartialCaption(partial));
             }
         });
 
         _voice.OnSpeechBargeIn += () => MainThreadDispatcher.RunOnMainThread(() => {
             if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
-            _uiManager.UpdateText("Listening…");
+            _uiManager.UpdateText(ListeningIdleCaption());
         });
 
         _voice.OnSentenceCompleted += (text) => {
@@ -261,6 +282,11 @@ public class WizardOfOzClient : MonoBehaviour
             if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = -1f;
             if (string.IsNullOrEmpty(err)) return;
+            if (_italianLocalAsrEnabled && IsLikelyItalianSpeechUnavailableError(err))
+            {
+                _uiManager.UpdateText("Italian unavailable");
+                return;
+            }
             if (err.StartsWith(HybridVoiceManager.AsrFallbackUserMessage, StringComparison.Ordinal))
                 _uiManager.UpdateText(err);
             else
@@ -289,7 +315,8 @@ public class WizardOfOzClient : MonoBehaviour
             asrFallbackAfterConsecutiveFailures,
             asrPhraseEndSilenceSeconds,
             _italianLocalAsrEnabled,
-            allowApiSilenceAutoFallback);
+            allowApiSilenceAutoFallback,
+            _italianLocalAsrEnabled);
         WireEvents();
         _voice.Start();
     }
@@ -306,22 +333,81 @@ public class WizardOfOzClient : MonoBehaviour
             return;
         }
 
+        if (enabled)
+        {
+#if UNITY_WSA && !UNITY_EDITOR
+            if (!IsItalianInDeviceLanguageList())
+            {
+                _uiManager?.UpdateText("Italian unavailable");
+                _uiManager?.SetItalianToggleState(false);
+                return;
+            }
+#endif
+        }
+
         _italianLocalAsrEnabled = enabled;
         _uiManager?.SetItalianToggleState(_italianLocalAsrEnabled);
         _listeningStallDeadline = -1f;
         _nextStallMessageAllowedTime = 0f;
-        if (_asrActive)
+
+        if (!_italianLocalAsrEnabled)
+        {
+            _uiManager?.UpdateText("");
+        }
+
+        // Ensure ITA ON immediately starts capture even when ASR was idle.
+        if (_italianLocalAsrEnabled && !_asrActive)
+        {
+            SetAsrActive(true);
+        }
+        else if (_asrActive)
         {
             CreateAndStartVoiceManager();
         }
+    }
 
-        if (_uiManager != null)
+    /// <summary>Clears subtitle caption (e.g. when switching to Sign or English ASR).</summary>
+    public void ClearSubtitleCaption()
+    {
+        _uiManager?.UpdateText("");
+    }
+
+#if UNITY_WSA && !UNITY_EDITOR
+    private static bool IsItalianInDeviceLanguageList()
+    {
+        try
         {
-            _uiManager.UpdateText(
-                _italianLocalAsrEnabled
-                    ? "Italian local ASR ON. Speak Italian and captions will show recognized text."
-                    : "Italian local ASR OFF. Switched back to English/API ASR.");
+            foreach (string lang in global::Windows.Globalization.ApplicationLanguages.Languages)
+            {
+                if (!string.IsNullOrEmpty(lang) && lang.StartsWith("it", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
         }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[WizardOfOz] IsItalianInDeviceLanguageList: " + ex.Message);
+        }
+
+        return false;
+    }
+#endif
+
+    private static bool IsLikelyItalianSpeechUnavailableError(string err)
+    {
+        if (string.IsNullOrEmpty(err))
+        {
+            return false;
+        }
+
+        string e = err.ToLowerInvariant();
+        return e.Contains("language")
+            || e.Contains("sperr")
+            || e.Contains("unsupported")
+            || e.Contains("not available")
+            || e.Contains("0x80045")
+            || e.Contains("0x8004");
     }
 
     public void SetAsrActive(bool active)

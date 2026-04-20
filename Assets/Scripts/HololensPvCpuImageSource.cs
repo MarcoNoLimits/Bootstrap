@@ -38,6 +38,7 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
 
     private Texture2D _rgbaTexture;
     private float _nextSubsystemLogAt;
+    private float _nextStartupNudgeAt;
 
     private void Awake()
     {
@@ -67,6 +68,9 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
         {
             Debug.Log("[HololensPvCpuImageSource] XRCameraSubsystem providers: " + descs.Count);
         }
+
+        // One early nudge so ARSession / ARCameraManager are active before first Sign pipeline frame (reduces "subsystem not running" races).
+        RequestStartupNudge();
     }
 
     /// <summary>
@@ -84,6 +88,45 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
         centerCropFraction = Mathf.Clamp(cropFraction, 0.2f, 1f);
         jpegQuality = Mathf.Clamp(jpgQ, 1, 100);
         mirrorY = useMirrorY;
+    }
+
+    /// <summary>
+    /// Best-effort startup nudge for cases where AR camera components are present but not yet active/running.
+    /// Safe to call repeatedly; internally throttled.
+    /// </summary>
+    public void RequestStartupNudge()
+    {
+        TryNudgeCameraStartup(forceLog: true);
+    }
+
+    /// <summary>
+    /// Returns a compact runtime diagnostics line for on-device troubleshooting.
+    /// </summary>
+    public string GetRuntimeDiagnosticsSummary()
+    {
+        if (arCameraManager == null)
+        {
+            arCameraManager = FindObjectOfType<ARCameraManager>();
+        }
+
+        ARSession arSession = FindObjectOfType<ARSession>();
+        bool camObjActive = arCameraManager != null && arCameraManager.gameObject.activeInHierarchy;
+        bool camEnabled = arCameraManager != null && arCameraManager.enabled;
+        bool subsystemPresent = arCameraManager != null && arCameraManager.subsystem != null;
+        bool subsystemRunning = subsystemPresent && arCameraManager.subsystem.running;
+        bool sessionPresent = arSession != null;
+        bool sessionEnabled = arSession != null && arSession.enabled;
+
+        return
+            "PV diagnostics: " +
+            $"ARCameraManager={(arCameraManager != null ? "found" : "missing")}, " +
+            $"camObjActive={camObjActive}, " +
+            $"camEnabled={camEnabled}, " +
+            $"subsystemPresent={subsystemPresent}, " +
+            $"subsystemRunning={subsystemRunning}, " +
+            $"ARSession={(sessionPresent ? "found" : "missing")}, " +
+            $"sessionEnabled={sessionEnabled}, " +
+            $"sessionState={ARSession.state}";
     }
 
     /// <summary>
@@ -107,6 +150,7 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
 
         if (arCameraManager.subsystem == null || !arCameraManager.subsystem.running)
         {
+            TryNudgeCameraStartup(forceLog: false);
             errorMessage = "AR camera subsystem not running";
             if (Time.realtimeSinceStartup >= _nextSubsystemLogAt)
             {
@@ -188,6 +232,88 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
                 errorMessage = ex.Message;
                 return false;
             }
+        }
+    }
+
+    private void TryNudgeCameraStartup(bool forceLog)
+    {
+        if (Time.realtimeSinceStartup < _nextStartupNudgeAt)
+        {
+            return;
+        }
+
+        _nextStartupNudgeAt = Time.realtimeSinceStartup + 1.5f;
+        bool changed = false;
+
+        if (arCameraManager == null)
+        {
+            arCameraManager = FindObjectOfType<ARCameraManager>();
+        }
+
+        if (arCameraManager == null)
+        {
+            Camera cam = Camera.main;
+            if (cam == null)
+            {
+                cam = FindObjectOfType<Camera>();
+            }
+
+            if (cam != null)
+            {
+                arCameraManager = cam.GetComponent<ARCameraManager>();
+                if (arCameraManager == null)
+                {
+                    arCameraManager = cam.gameObject.AddComponent<ARCameraManager>();
+                    changed = true;
+                }
+
+                ARCameraBackground bg = cam.GetComponent<ARCameraBackground>();
+                if (bg == null)
+                {
+                    cam.gameObject.AddComponent<ARCameraBackground>();
+                    changed = true;
+                }
+            }
+        }
+
+        if (arCameraManager != null)
+        {
+            if (!arCameraManager.gameObject.activeSelf)
+            {
+                arCameraManager.gameObject.SetActive(true);
+                changed = true;
+            }
+
+            if (!arCameraManager.enabled)
+            {
+                arCameraManager.enabled = true;
+                changed = true;
+            }
+        }
+
+        ARSession arSession = FindObjectOfType<ARSession>();
+        if (arSession == null)
+        {
+            GameObject sessionGo = new GameObject("AR Session (Auto)");
+            arSession = sessionGo.AddComponent<ARSession>();
+            changed = true;
+        }
+
+        if (!arSession.enabled)
+        {
+            arSession.enabled = true;
+            changed = true;
+        }
+
+        if (forceLog || changed)
+        {
+            Debug.Log(
+                "[HololensPvCpuImageSource] Startup nudge applied " +
+                $"(cameraManager={(arCameraManager != null ? "found" : "missing")}, " +
+                $"cameraManagerEnabled={(arCameraManager != null && arCameraManager.enabled)}, " +
+                $"cameraObjectActive={(arCameraManager != null && arCameraManager.gameObject.activeSelf)}, " +
+                $"arSession={(arSession != null ? "found" : "missing")}, " +
+                $"arSessionEnabled={(arSession != null && arSession.enabled)}).");
         }
     }
 

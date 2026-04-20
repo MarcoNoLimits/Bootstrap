@@ -17,15 +17,17 @@ public class InferResponse
     public string text;
     public string status_hint;
     public string model;
+    /// <summary>Preferred backend flag for hand presence.</summary>
+    public bool hand_detected;
     /// <summary>When true, server detected no hand.</summary>
     public bool no_hand;
 }
 
 /// <summary>
 /// HoloLens inference client:
-/// - Primary path: PV via <c>XRCpuImage</c> → JPEG → POST raw bytes to Health <c>/predict_hand</c> (<c>Content-Type: image/jpeg</c>).
+/// - Primary path: PV via <c>XRCpuImage</c> → optimized JPEG → POST raw bytes to backend <c>/predict</c> (<c>Content-Type: image/jpeg</c>).
 /// - Legacy: WebCamTexture / HF Gradio Space / on-device hand ROI modes.
-/// - Parses JSON (<c>predicted_letter</c>, <c>confidence</c>, <c>no_hand</c>) and updates UI.
+/// - Parses JSON (<c>predicted_letter</c>, <c>confidence</c>, <c>hand_detected</c>/<c>no_hand</c>) and updates UI.
 /// </summary>
 [DefaultExecutionOrder(-40)]
 public class SignInferenceClient : MonoBehaviour
@@ -33,7 +35,8 @@ public class SignInferenceClient : MonoBehaviour
     private const string DebugSessionId = "729dee";
 
     /// <summary>Agent file log (NDJSON). Off on device — file I/O here caused noisy WinRT traces and is not needed for shipping.</summary>
-    private const bool AgentDebugFileLog = false;
+    // Toggle only when debugging file I/O (kept non-const so DebugWrite is not always-unreachable / CS0162).
+    private static bool AgentDebugFileLog;
 
     private static string DebugLogPath =>
         Path.Combine(Application.persistentDataPath, "debug-729dee.log");
@@ -47,11 +50,11 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private float requestTimeoutSeconds = 15f;
 
     [Header("PV CPU image pipeline (Health server)")]
-    [Tooltip("Use AR Foundation XRCpuImage for HoloLens PV — no WebCamTexture; POST raw JPEG to Health predict_hand.")]
+    [Tooltip("Use AR Foundation XRCpuImage for HoloLens PV — no WebCamTexture; POST optimized JPEG frames to /predict.")]
     [SerializeField] private bool useXrCpuImagePipeline = true;
     [SerializeField] private HololensPvCpuImageSource pvCpuImageSource;
-    [Tooltip("Path on baseUrl for raw JPEG POST (default /predict_hand). Test server: GET /health, POST /predict_hand with image/jpeg.")]
-    [SerializeField] private string inferEndpointPath = "/predict_hand";
+    [Tooltip("Path on baseUrl for raw JPEG POST (default /predict).")]
+    [SerializeField] private string inferEndpointPath = "/predict";
     [Tooltip("Minimum time between send attempts in ms (150–200 ≈ 5–6 FPS). Used when CPU pipeline is on.")]
     [SerializeField] private float minSendIntervalMs = 175f;
     [Tooltip("Max width after resize/crop (default 640). Synced to HololensPvCpuImageSource on Start.")]
@@ -63,7 +66,7 @@ public class SignInferenceClient : MonoBehaviour
 
     [Header("Capture")]
     [Tooltip("If enabled and available, uses WebCamTexture (PV camera) as source.")]
-    [SerializeField] private bool useWebCamTexture = true;
+    [SerializeField] private bool useWebCamTexture = false;
     [Tooltip("If true, only allow WebCamTexture capture on HoloLens device builds (never desktop editor/webcam).")]
     [SerializeField] private bool hololensCameraOnly = true;
     [Tooltip("Editor-only debug: allow desktop webcam in Unity Editor while keeping device builds HoloLens-focused.")]
@@ -77,7 +80,7 @@ public class SignInferenceClient : MonoBehaviour
     [Tooltip("Optional texture source if not using WebCamTexture (e.g. RenderTexture converted elsewhere).")]
     [SerializeField] private Texture overrideSource;
     [SerializeField] private int targetSize = 224;
-    [SerializeField] private int jpegQuality = 92;
+    [SerializeField] private int jpegQuality = 88;
     [SerializeField, Range(0.25f, 1f)] private float centerCropScale = 0.65f;
 
     [Header("Hand ROI + PV (HoloLens 2)")]
@@ -88,6 +91,8 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private string handRoiMultipartFileName = "hand.jpg";
 
     [Header("Rate control")]
+    [Tooltip("When enabled, force strict low-latency path: XRCpuImage + /predict + single in-flight + no legacy capture paths.")]
+    [SerializeField] private bool strictLowLatencyMode = true;
     [Tooltip("Stage 1 test mode: never send network inference requests (ROI/debug only).")]
     [SerializeField] private bool stage1Only = false;
     [Tooltip("Convenience mode for testing Stage A+B together with recommended defaults.")]
@@ -116,11 +121,13 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private int similaritySampleSize = 16;
 
     [Header("Model tuning (optional fields)")]
+#pragma warning disable 0414 // Serialized for inspector compatibility; reserved for upcoming backend tuning hooks.
     [SerializeField] private int stableFrames = 0;
     [SerializeField] private int pauseMs = 0;
     [SerializeField] private float minConf = 0f;
     [SerializeField] private int noiseFrames = 0;
     [SerializeField] private int wordPauseMs = 0;
+#pragma warning restore 0414
 
     [Header("UI")]
     [SerializeField] private Text letterText;
@@ -133,15 +140,15 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private bool useServerTextAsAuthoritative = true;
 
     [Header("Debug")]
-    [Tooltip("CPU pipeline: log frame bytes, round-trip ms, detection vs no_hand, HTTP ok/fail, send FPS (see logEveryNSendAttempts for summaries).")]
+    [Tooltip("CPU pipeline: log frame bytes, round-trip ms, hand/no-hand, HTTP ok/fail, and send FPS (see logEveryNSendAttempts for summaries).")]
     [SerializeField] private bool logCpuPipelineDebug = false;
-    [Tooltip("If true, logs every raw predict_hand request. If false, only periodic summaries + errors.")]
+    [Tooltip("If true, logs every raw /predict request. If false, only periodic summaries + errors.")]
     [SerializeField] private bool logEveryCpuPipelineRequest = false;
     [Tooltip("If enabled, saves occasional captured ROI JPGs to persistentDataPath/sign_debug.")]
     [SerializeField] private bool saveDebugFrames = false;
     [Tooltip("Save one debug frame every N send attempts.")]
     [SerializeField] private int saveEveryNSends = 20;
-    [Tooltip("If enabled, saves the first sent inference JPEGs exactly as posted to predict_hand.")]
+    [Tooltip("If enabled, saves the first sent inference JPEGs exactly as posted to /predict.")]
     [SerializeField] private bool saveFirstSentFrames = false;
     [Tooltip("How many sent inference frames to save for visual inspection.")]
     [SerializeField] private int saveFirstSentFramesCount = 30;
@@ -161,8 +168,10 @@ public class SignInferenceClient : MonoBehaviour
     private string _lastServerText;
     private Color32[] _lastRoiSample;
     private int _frameTickCounter;
+#pragma warning disable 0414 // Debug placeholders kept for planned telemetry expansion.
     private bool _loggedFirstRequest;
     private bool _loggedFirstSuccess;
+#pragma warning restore 0414
     private int _captureFrameCount;
     private int _sendAttemptCount;
     private int _sendSuccessCount;
@@ -174,7 +183,7 @@ public class SignInferenceClient : MonoBehaviour
     private bool _warnedMissingHandPipeline;
     private string _lastMultipartFileName = "frame.jpg";
     private float _lastSendAt = -1f;
-    // CPU pipeline (Health /predict_hand) debug aggregates
+    // CPU pipeline (/predict) debug aggregates
     private int _cpuPipeHttpOk;
     private int _cpuPipeHttpFail;
     private int _cpuPipeHandDetected;
@@ -199,6 +208,42 @@ public class SignInferenceClient : MonoBehaviour
     private string _lastNetworkError = "";
     private bool _applicationIsQuitting;
     private int _requestSequence;
+#if UNITY_WSA && !UNITY_EDITOR
+    private static bool _requestedWebCamUserAuthorization;
+    /// <summary>UWP: false until <see cref="CoRequestWebCamUserAuthorizationOnce"/> finishes (prompt or already granted).</summary>
+    private bool _uwpWebCamPrivacyReady;
+#else
+    private const bool _uwpWebCamPrivacyReady = true;
+#endif
+    private bool _reportedPvStartupDiagnostics;
+
+    /// <summary>
+    /// Shown when PV / AR camera never starts (often Mirage 0x80070005). VS deploy uses DefaultAccount/DevelopmentFiles — camera often fails there.
+    /// </summary>
+    private static string PvBlockedUserHint()
+    {
+#if UNITY_WSA && !UNITY_EDITOR
+        try
+        {
+            string blob = (Application.persistentDataPath ?? "") + "\n" + (Application.dataPath ?? "");
+            if (blob.IndexOf("DefaultAccount", StringComparison.OrdinalIgnoreCase) >= 0
+                || blob.IndexOf("DevelopmentFiles", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return
+                    "VS/DevelopmentFiles (DefaultAccount): Mirage often blocks PV here (80070005). " +
+                    "Build an app package, install on HoloLens for your signed-in user, open from Start — do not rely on F5/Remote Debugger. " +
+                    "Then Settings → Privacy → Camera → Bootstrap ON, reboot once.";
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+#endif
+        return
+            "OS blocked camera access. Settings → Privacy → Camera: enable this app. " +
+            "Use a normal signed-in user (not DefaultAccount). Reboot. Close MRC / Device Portal live camera.";
+    }
 
     /// <summary>Same string as the on-screen sign caption (letter, spell text, hint). <see cref="XRDebugLogger"/> reads this for <c>xr-debug-hud</c> — never send/capture counters.</summary>
     public static string LiveCaptionForHud { get; private set; } = "";
@@ -225,6 +270,11 @@ public class SignInferenceClient : MonoBehaviour
         if (combinedABMode)
         {
             ApplyCombinedAbDefaults();
+        }
+
+        if (strictLowLatencyMode)
+        {
+            ApplyStrictLowLatencyMode();
         }
 
 #if UNITY_WSA && !UNITY_EDITOR
@@ -284,11 +334,24 @@ public class SignInferenceClient : MonoBehaviour
         minSendIntervalMs = 175f;
         requestFps = 5f;
         dropIfRequestInFlight = true;
-        jpegQuality = 82;
-        maxSendFrameWidth = 512;
-        inferEndpointPath = "/predict_hand";
+        jpegQuality = 88;
+        maxSendFrameWidth = 640;
+        inferEndpointPath = "/predict";
         confidenceThreshold = 0.55f;
         uiDebounceSeconds = 0.12f;
+    }
+
+    private void ApplyStrictLowLatencyMode()
+    {
+        useXrCpuImagePipeline = true;
+        useWebCamTexture = false;
+        useHandRoiInference = false;
+        dropIfRequestInFlight = true;
+        stage1Only = false;
+        inferEndpointPath = "/predict";
+        minSendIntervalMs = Mathf.Clamp(minSendIntervalMs, 150f, 200f);
+        maxSendFrameWidth = Mathf.Clamp(maxSendFrameWidth, 160, 640);
+        jpegQuality = Mathf.Clamp(jpegQuality, 85, 90);
     }
 
     private void ApplyPlatformDefaultBaseUrl()
@@ -357,7 +420,7 @@ public class SignInferenceClient : MonoBehaviour
         Debug.Log(
             "[SignInferenceClient] startup config " +
             $"mode={App.CurrentInputMode} useXrCpuImagePipeline={useXrCpuImagePipeline} useWebCamTexture={useWebCamTexture} " +
-            $"baseUrl={baseUrl} endpointPath={inferEndpointPath} requestTimeoutSeconds={requestTimeoutSeconds:0.0} requestFps={requestFps:0.0}");
+            $"strictLowLatencyMode={strictLowLatencyMode} baseUrl={baseUrl} endpointPath={inferEndpointPath} requestTimeoutSeconds={requestTimeoutSeconds:0.0} requestFps={requestFps:0.0} minSendIntervalMs={minSendIntervalMs:0}");
 
         if (useSubtitleLabelFallback)
         {
@@ -428,8 +491,8 @@ public class SignInferenceClient : MonoBehaviour
             return;
         }
 
-        // Only drive sign caption/rendering when Sign mode is actually active.
-        // Prevents "Sign: waiting for API…" while ASR (or none) is selected.
+        // Only drive sign caption/rendering when Sign mode is active.
+        // Prevents stale sign status when another input mode is selected.
         if (App.CurrentInputMode != App.InputMode.Sign)
         {
             if (_mainHudCaptionLabel != null)
@@ -508,8 +571,31 @@ public class SignInferenceClient : MonoBehaviour
         QueueInference(jpegBytes, "loop");
     }
 
+    private static string FormatCpuPipelineErrorCaption(string err)
+    {
+        if (string.IsNullOrEmpty(err))
+        {
+            return "Sign: waiting for camera frame...";
+        }
+
+        if (err.IndexOf("AR camera subsystem not running", StringComparison.OrdinalIgnoreCase) >= 0
+            || err.IndexOf("ARCameraManager missing or disabled", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return "Sign: " + PvBlockedUserHint();
+        }
+
+        return "Sign: " + err;
+    }
+
     private void RunCpuImagePipelineLoopTick()
     {
+#if UNITY_WSA && !UNITY_EDITOR
+        if (!_uwpWebCamPrivacyReady)
+        {
+            _inferCaptionLine = "Sign: waiting for camera permission (accept the system prompt if shown)...";
+            return;
+        }
+#endif
         if (pvCpuImageSource == null)
         {
             pvCpuImageSource = FindObjectOfType<HololensPvCpuImageSource>();
@@ -523,9 +609,22 @@ public class SignInferenceClient : MonoBehaviour
 
         if (!pvCpuImageSource.TryGetJpegFrame(out byte[] jpegBytes, out string err))
         {
-            _inferCaptionLine = string.IsNullOrEmpty(err) ? "Sign: waiting for camera frame..." : $"Sign: {err}";
+            _inferCaptionLine = FormatCpuPipelineErrorCaption(err);
+            if (!_reportedPvStartupDiagnostics
+                && !string.IsNullOrEmpty(err)
+                && (err.IndexOf("AR camera subsystem not running", StringComparison.OrdinalIgnoreCase) >= 0
+                    || err.IndexOf("ARCameraManager missing or disabled", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                _reportedPvStartupDiagnostics = true;
+                string diag = pvCpuImageSource.GetRuntimeDiagnosticsSummary();
+                _cameraUserMessage = diag + " " + PvBlockedUserHint();
+                Debug.LogWarning("[SignInferenceClient] " + diag);
+                ApplyCaptionToSubtitle();
+            }
             return;
         }
+
+        _reportedPvStartupDiagnostics = false;
 
         _captureFrameCount++;
         QueueInference(jpegBytes, "loop");
@@ -546,6 +645,29 @@ public class SignInferenceClient : MonoBehaviour
 
         if (signCaptureActive)
         {
+            if (useXrCpuImagePipeline)
+            {
+                if (pvCpuImageSource == null)
+                {
+                    pvCpuImageSource = FindObjectOfType<HololensPvCpuImageSource>();
+                }
+
+                if (pvCpuImageSource != null)
+                {
+                    pvCpuImageSource.SetEncodingOptions(
+                        maxSendFrameWidth,
+                        cpuPipelineCropCenter,
+                        cpuPipelineCenterCropFraction,
+                        jpegQuality,
+                        true);
+                    pvCpuImageSource.RequestStartupNudge();
+                }
+
+#if UNITY_WSA && !UNITY_EDITOR
+                StartCoroutine(CoRequestWebCamUserAuthorizationOnce());
+#endif
+            }
+
             if (useWebCamTexture && !useXrCpuImagePipeline)
             {
                 RequestWebCamStart();
@@ -567,6 +689,40 @@ public class SignInferenceClient : MonoBehaviour
             UpdateIdleStatusHint();
         }
     }
+
+#if UNITY_WSA && !UNITY_EDITOR
+    /// <summary>
+    /// UWP/HoloLens: capability in manifest is not always enough; request runtime consent once per process.
+    /// </summary>
+    private IEnumerator CoRequestWebCamUserAuthorizationOnce()
+    {
+        if (_requestedWebCamUserAuthorization)
+        {
+            _uwpWebCamPrivacyReady = true;
+            yield break;
+        }
+
+        if (Application.HasUserAuthorization(UserAuthorization.WebCam))
+        {
+            _requestedWebCamUserAuthorization = true;
+            _uwpWebCamPrivacyReady = true;
+            yield break;
+        }
+
+        _requestedWebCamUserAuthorization = true;
+        Debug.Log("[SignInferenceClient] Requesting WebCam user authorization (runtime)...");
+        yield return Application.RequestUserAuthorization(UserAuthorization.WebCam);
+        _uwpWebCamPrivacyReady = true;
+        if (!Application.HasUserAuthorization(UserAuthorization.WebCam))
+        {
+            Debug.LogWarning("[SignInferenceClient] WebCam user authorization not granted.");
+        }
+        else
+        {
+            Debug.Log("[SignInferenceClient] WebCam user authorization granted.");
+        }
+    }
+#endif
 
     private void OnDestroy()
     {
@@ -878,7 +1034,7 @@ public class SignInferenceClient : MonoBehaviour
                 $"[SignInferenceClient] cadence sendAttempts={_sendAttemptCount} success={_sendSuccessCount} droppedInFlight={_droppedInFlightFrames} droppedInvalid={_droppedInvalidFrameCount} skippedRoi={_skippedHandRoiFrames}");
         }
 
-        if (useXrCpuImagePipeline)
+        if (strictLowLatencyMode || useXrCpuImagePipeline)
         {
             StartCoroutine(PostInferRawJpeg(jpegBytes));
             return;
@@ -908,7 +1064,7 @@ public class SignInferenceClient : MonoBehaviour
 
     private bool TryBuildJpegForInference(Texture source, out byte[] jpegBytes)
     {
-        if (useHandRoiInference)
+        if (!strictLowLatencyMode && useHandRoiInference)
         {
             if (handRoiPipeline == null)
             {
@@ -1189,7 +1345,7 @@ public class SignInferenceClient : MonoBehaviour
     }
 
     /// <summary>
-    /// Health hand pipeline: raw JPEG body, <c>Content-Type: image/jpeg</c>, JSON with predicted_letter / confidence / no_hand.
+    /// Hand pipeline: raw JPEG body, <c>Content-Type: image/jpeg</c>, JSON with predicted_letter / confidence / hand_detected.
     /// </summary>
     private IEnumerator PostInferRawJpeg(byte[] jpegBytes)
     {
@@ -1197,7 +1353,7 @@ public class SignInferenceClient : MonoBehaviour
         float startedAt = Time.realtimeSinceStartup;
         string requestId = "sign-" + System.Threading.Interlocked.Increment(ref _requestSequence).ToString("D5");
         int jpegLen = jpegBytes?.Length ?? 0;
-        string path = string.IsNullOrEmpty(inferEndpointPath) ? "/predict_hand" : inferEndpointPath;
+        string path = string.IsNullOrEmpty(inferEndpointPath) ? "/predict" : inferEndpointPath;
         if (!path.StartsWith("/", StringComparison.Ordinal))
         {
             path = "/" + path;
@@ -1562,10 +1718,11 @@ public class SignInferenceClient : MonoBehaviour
 
     private void HandleInferResponse(InferResponse response)
     {
+        bool noHand = IsNoHand(response);
         _inferCaptionLine = FormatInferCaption(response);
         ApplyCaptionToSubtitle();
 
-        if (response.no_hand)
+        if (noHand)
         {
             _pendingLetter = null;
             if (letterText != null)
@@ -1608,7 +1765,7 @@ public class SignInferenceClient : MonoBehaviour
     private void UpdateIdleStatusHint()
     {
         SetLiveCaptionForHud("");
-        // Keep idle state silent so it does not overwrite ASR/transcription captions.
+        // Keep idle state silent so it does not overwrite other UI text channels.
     }
 
     private void ApplyCaptionToSubtitle()
@@ -1690,6 +1847,24 @@ public class SignInferenceClient : MonoBehaviour
             error = "json parse failed: " + ex.Message;
         }
 
+        bool? rawHandDetected = ReadJsonBoolField(json, "hand_detected");
+        bool? rawNoHand = ReadJsonBoolField(json, "no_hand");
+        if (r != null)
+        {
+            if (rawHandDetected.HasValue)
+            {
+                r.hand_detected = rawHandDetected.Value;
+            }
+            if (rawNoHand.HasValue)
+            {
+                r.no_hand = rawNoHand.Value;
+            }
+            else if (rawHandDetected.HasValue)
+            {
+                r.no_hand = !rawHandDetected.Value;
+            }
+        }
+
         if (r != null && InferResponseHasContent(r))
         {
             response = r;
@@ -1716,6 +1891,15 @@ public class SignInferenceClient : MonoBehaviour
         if (noHand.HasValue)
         {
             manual.no_hand = noHand.Value;
+        }
+        bool? handDetected = ReadJsonBoolField(json, "hand_detected");
+        if (handDetected.HasValue)
+        {
+            manual.hand_detected = handDetected.Value;
+            if (!noHand.HasValue)
+            {
+                manual.no_hand = !handDetected.Value;
+            }
         }
 
         // Gradio call API may wrap output in data[0] object.
@@ -1756,9 +1940,19 @@ public class SignInferenceClient : MonoBehaviour
     {
         if (r == null) return false;
         return r.no_hand
+            || !r.hand_detected
             || !string.IsNullOrEmpty(r.letter)
             || !string.IsNullOrEmpty(r.text)
             || !string.IsNullOrEmpty(r.status_hint);
+    }
+
+    private static bool IsNoHand(InferResponse r)
+    {
+        if (r == null) return true;
+        if (r.no_hand) return true;
+        if (!r.hand_detected) return true;
+        if (string.Equals(r.letter, "NONE", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     private static string ExtractJsonObject(string s)
@@ -1963,7 +2157,8 @@ public class SignInferenceClient : MonoBehaviour
         }
 
         var parts = new List<string>();
-        if (r.no_hand)
+        bool noHand = IsNoHand(r);
+        if (noHand)
         {
             parts.Add("NO HAND");
         }
@@ -1974,7 +2169,7 @@ public class SignInferenceClient : MonoBehaviour
             parts.Add(r.text.Trim());
         }
 
-        if (!r.no_hand && !string.IsNullOrEmpty(r.letter))
+        if (!noHand && !string.IsNullOrEmpty(r.letter) && !string.Equals(r.letter, "NONE", StringComparison.OrdinalIgnoreCase))
         {
             parts.Add($"{r.letter} ({Mathf.Clamp01(r.confidence):P0})");
         }

@@ -15,7 +15,7 @@ $ErrorActionPreference = "Stop"
 function Write-Step {
     param([string]$Message)
     Write-Host "[fast-deploy] $Message" -ForegroundColor Cyan
-}
+}ı
 
 function Resolve-MSBuild {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"

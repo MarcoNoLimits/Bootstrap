@@ -6,7 +6,6 @@ using System.Collections.Generic;
 
 public class App : MonoBehaviour
 {
-    private const string DefaultAsrText = "Live speech appears here. Toggle translation to view Italian text.";
     public enum InputMode { None, Asr, Sign }
     public static InputMode CurrentInputMode { get; private set; } = InputMode.None;
     public static bool IsTranslationEnabled { get; private set; }
@@ -206,15 +205,33 @@ public class App : MonoBehaviour
                 _audioOn = !_audioOn;
                 btnAudio.text = _audioOn ? "Automatic Speech Recognition · On" : "Automatic Speech Recognition";
                 btnAudio.EnableInClassList("action-rail-btn-on", _audioOn);
-                SetAsrCaptureActive(_audioOn);
+
+                var wizard = WizardOfOzClient.Instance;
+                if (_audioOn && _italianAsrOn)
+                {
+                    // Keep English and Italian local dictation strictly separated.
+                    _italianAsrOn = false;
+                    if (_itaToggleBtn != null)
+                    {
+                        _itaToggleBtn.text = "Switch to ITA · Off";
+                        _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                    }
+                    if (wizard != null)
+                    {
+                        wizard.SetItalianLocalAsrEnabled(false);
+                    }
+                }
+
                 if (_audioOn)
                 {
+                    wizard?.ClearSubtitleCaption();
                     // Translation should be enabled by default whenever ASR turns on.
                     _translationOn = true;
                 }
 
-                CurrentInputMode = _audioOn ? InputMode.Asr : (_signOn ? InputMode.Sign : InputMode.None);
+                CurrentInputMode = (_audioOn || _italianAsrOn) ? InputMode.Asr : (_signOn ? InputMode.Sign : InputMode.None);
                 IsTranslationEnabled = _audioOn && _translationOn;
+                SetAsrCaptureActive(_audioOn || _italianAsrOn);
 
                 var signClient = FindObjectOfType<SignInferenceClient>();
                 if (_audioOn && signClient != null)
@@ -251,21 +268,6 @@ public class App : MonoBehaviour
                     }
                 }
 
-                if (!_audioOn && _italianAsrOn)
-                {
-                    _italianAsrOn = false;
-                    if (_itaToggleBtn != null)
-                    {
-                        _itaToggleBtn.text = "Switch to ITA · Off";
-                        _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
-                    }
-
-                    var wizard = WizardOfOzClient.Instance;
-                    if (wizard != null)
-                    {
-                        wizard.SetItalianLocalAsrEnabled(false);
-                    }
-                }
             };
         }
 
@@ -279,15 +281,18 @@ public class App : MonoBehaviour
                 _signOn = !_signOn;
                 btnSlr.text = _signOn ? "Sign Language · On" : "Sign Language";
                 btnSlr.EnableInClassList("action-rail-btn-on", _signOn);
-                CurrentInputMode = _signOn ? InputMode.Sign : (_audioOn ? InputMode.Asr : InputMode.None);
+                if (_signOn)
+                {
+                    WizardOfOzClient.Instance?.ClearSubtitleCaption();
+                }
+                CurrentInputMode = _signOn ? InputMode.Sign : ((_audioOn || _italianAsrOn) ? InputMode.Asr : InputMode.None);
                 if (_signOn) IsTranslationEnabled = false;
 
-                if (_signOn && _audioOn)
+                if (_signOn && (_audioOn || _italianAsrOn))
                 {
                     _audioOn = false;
                     btnAudio.text = "Automatic Speech Recognition";
                     btnAudio.EnableInClassList("action-rail-btn-on", false);
-                    SetAsrCaptureActive(false);
                     if (_italianAsrOn)
                     {
                         _italianAsrOn = false;
@@ -311,6 +316,8 @@ public class App : MonoBehaviour
                         _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
                         _translationToggleBtn.style.display = DisplayStyle.None;
                     }
+
+                    SetAsrCaptureActive(false);
                 }
 
                 var signClient = FindObjectOfType<SignInferenceClient>();
@@ -346,33 +353,56 @@ public class App : MonoBehaviour
                 _itaToggleBtn.text = _italianAsrOn ? "Switch to ITA · On" : "Switch to ITA · Off";
                 _itaToggleBtn.EnableInClassList("action-rail-btn-on", _italianAsrOn);
 
-                if (_italianAsrOn && !_audioOn)
+                if (_italianAsrOn && _signOn)
                 {
-                    _audioOn = true;
-                    if (_asrToggleBtn != null)
+                    _signOn = false;
+                    if (_signToggleBtn != null)
                     {
-                        _asrToggleBtn.text = "Automatic Speech Recognition · On";
-                        _asrToggleBtn.EnableInClassList("action-rail-btn-on", true);
+                        _signToggleBtn.text = "Sign Language";
+                        _signToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
 
-                    CurrentInputMode = InputMode.Asr;
-                    IsTranslationEnabled = false;
+                    var signClient = FindObjectOfType<SignInferenceClient>();
+                    if (signClient != null)
+                    {
+                        signClient.SetSignCaptureActive(false);
+                    }
+                }
+
+                if (_italianAsrOn && _audioOn)
+                {
+                    // Keep modes exclusive: ITA ON turns English ASR mode OFF.
+                    _audioOn = false;
+                    if (_asrToggleBtn != null)
+                    {
+                        _asrToggleBtn.text = "Automatic Speech Recognition";
+                        _asrToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                    }
                     if (_translationToggleBtn != null)
                     {
                         _translationOn = false;
-                        _translationToggleBtn.style.display = DisplayStyle.Flex;
+                        _translationToggleBtn.style.display = DisplayStyle.None;
                         _translationToggleBtn.text = "Translation · Off";
                         _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
-
-                    SetAsrCaptureActive(true);
                 }
+
+                CurrentInputMode = _italianAsrOn
+                    ? InputMode.Asr
+                    : (_audioOn ? InputMode.Asr : (_signOn ? InputMode.Sign : InputMode.None));
+                IsTranslationEnabled = _audioOn && _translationOn;
 
                 var wizard = WizardOfOzClient.Instance;
                 if (wizard != null)
                 {
                     wizard.SetItalianLocalAsrEnabled(_italianAsrOn);
+                    _italianAsrOn = wizard.IsItalianLocalAsrEnabled;
                 }
+
+                _itaToggleBtn.text = _italianAsrOn ? "Switch to ITA · On" : "Switch to ITA · Off";
+                _itaToggleBtn.EnableInClassList("action-rail-btn-on", _italianAsrOn);
+
+                SetAsrCaptureActive(_italianAsrOn || _audioOn);
             };
         }
 
@@ -445,6 +475,8 @@ public class App : MonoBehaviour
             _itaToggleBtn.text = "Switch to ITA · Off";
             _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
         }
+
+        WizardOfOzClient.Instance?.ClearSubtitleCaption();
 
         var signClient = FindObjectOfType<SignInferenceClient>();
         if (signClient != null)
