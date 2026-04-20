@@ -34,6 +34,9 @@ public class HololensAsrManager : MonoBehaviour
     [SerializeField] private float _chunkSeconds = 1.0f;
     [SerializeField] private float _sendWindowSeconds = 8.0f;
     [SerializeField] private int _clipLengthSeconds = 30;
+    [Header("Microphone selection")]
+    [Tooltip("If set, prefer a microphone whose device name contains this text (case-insensitive).")]
+    [SerializeField] private string _preferredMicNameContains = "";
 
     private AudioClip _micClip;
     private string _micDevice;
@@ -64,29 +67,6 @@ public class HololensAsrManager : MonoBehaviour
         }
         Instance = this;
         DontDestroyOnLoad(gameObject);
-
-        if (!_quittingHookRegistered)
-        {
-            _quittingHookRegistered = true;
-            Application.quitting += OnApplicationQuitting;
-        }
-    }
-
-    /// <summary>
-    /// Stop microphone capture before WinRT media stack tears down; avoids HRESULT 0xC00D3E85
-    /// ("Shutdown() has been called") when Microphone.End runs too late.
-    /// </summary>
-    private static void OnApplicationQuitting()
-    {
-        if (Instance == null) return;
-        try
-        {
-            Instance.StopAsr();
-        }
-        catch (Exception ex)
-        {
-            Debug.LogWarning("[ASR] OnApplicationQuitting: " + ex.Message);
-        }
     }
 
     private static void AsrFileLog(string line)
@@ -183,7 +163,7 @@ public class HololensAsrManager : MonoBehaviour
             return;
         }
 
-        _micDevice = Microphone.devices[0];
+        _micDevice = SelectMicrophoneDevice();
         _chunksUploaded = 0;
         _loggedFirstChunk = false;
         if (_writeAsrDebugFile)
@@ -215,65 +195,62 @@ public class HololensAsrManager : MonoBehaviour
         EmitStatus("Capture waiting for IsRecording…");
     }
 
+    private string SelectMicrophoneDevice()
+    {
+        string[] devices = Microphone.devices ?? Array.Empty<string>();
+        if (devices.Length == 0) return null;
+
+        var listed = new StringBuilder();
+        for (int i = 0; i < devices.Length; i++)
+        {
+            if (i > 0) listed.Append(" | ");
+            listed.Append(i).Append(":").Append(devices[i]);
+        }
+        EmitStatus("Detected microphone devices: " + listed);
+
+        string needle = (_preferredMicNameContains ?? string.Empty).Trim();
+        if (!string.IsNullOrEmpty(needle))
+        {
+            for (int i = 0; i < devices.Length; i++)
+            {
+                string d = devices[i] ?? string.Empty;
+                if (d.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    EmitStatus($"Using preferred microphone match '{needle}': {d}");
+                    return d;
+                }
+            }
+            EmitStatus($"Preferred microphone '{needle}' not found. Falling back to default index 0.");
+        }
+
+        EmitStatus("Using default microphone index 0: " + devices[0]);
+        return devices[0];
+    }
+
     public void StopAsr()
     {
         if (!IsRunning) return;
+        IsRunning = false;
 
-        try
+        if (_captureCoroutine != null)
         {
-            IsRunning = false;
-
-            if (_captureCoroutine != null)
-            {
-                try
-                {
-                    StopCoroutine(_captureCoroutine);
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning("[ASR] StopCoroutine: " + ex.Message);
-                }
-
-                _captureCoroutine = null;
-            }
-
-            if (!string.IsNullOrEmpty(_micDevice))
-            {
-                try
-                {
-                    if (Microphone.IsRecording(_micDevice))
-                    {
-                        Microphone.End(_micDevice);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning("[ASR] Microphone.End: " + ex.Message);
-                }
-            }
-
-            _micClip = null;
-            _micDevice = null;
-            _lastMicSample = 0;
-            _requestInFlight = false;
-            _pendingFloat32Bytes = null;
-            CurrentMicLevel = 0f;
-            try
-            {
-                OnMicLevelUpdated?.Invoke(CurrentMicLevel);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning("[ASR] OnMicLevelUpdated: " + ex.Message);
-            }
-
-            EmitStatus("Microphone capture stopped.");
+            StopCoroutine(_captureCoroutine);
+            _captureCoroutine = null;
         }
-        catch (Exception ex)
+
+        if (!string.IsNullOrEmpty(_micDevice) && Microphone.IsRecording(_micDevice))
         {
-            Debug.LogWarning("[ASR] StopAsr: " + ex);
-            IsRunning = false;
+            Microphone.End(_micDevice);
         }
+
+        _micClip = null;
+        _micDevice = null;
+        _lastMicSample = 0;
+        _requestInFlight = false;
+        _pendingFloat32Bytes = null;
+        CurrentMicLevel = 0f;
+        OnMicLevelUpdated?.Invoke(CurrentMicLevel);
+        EmitStatus("Microphone capture stopped.");
     }
 
     private IEnumerator CaptureAndUploadLoop()
