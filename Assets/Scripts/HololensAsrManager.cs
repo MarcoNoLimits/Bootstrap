@@ -27,6 +27,8 @@ public class HololensAsrManager : MonoBehaviour
     [Header("ASR API")]
     [Tooltip("Transcribe URL: POST raw float32 PCM mono (little-endian), Content-Type application/octet-stream, header X-Sample-Rate matching _sampleRate (e.g. 16000). Response JSON { \"text\": \"...\" }.")]
     [SerializeField] private string _asrApiUrl = "https://thedeezat-asr-hearing-impaired-api.hf.space/audio";
+    [Tooltip("Write detailed ASR logs to persistentDataPath/asr_debug.log. Keep off for faster runtime on device.")]
+    [SerializeField] private bool _writeAsrDebugFile = false;
     [SerializeField] private int _sampleRate = 16000;
     [Tooltip("Minimum seconds of new audio before sending (in real time). Per API: very short chunks may return {\"text\":\"\"}.")]
     [SerializeField] private float _chunkSeconds = 1.0f;
@@ -41,12 +43,17 @@ public class HololensAsrManager : MonoBehaviour
     private bool _requestInFlight;
     private byte[] _pendingFloat32Bytes;
     private int _chunksUploaded;
+    private int _requestAttemptCount;
+    private int _requestSuccessCount;
+    private int _requestFailureCount;
+    private int _requestParseEmptyCount;
     private bool _loggedFirstChunk;
     private bool _loggedResample;
     private float _lastEmptyTranscriptLogTime = -999f;
     private static string _logFilePath;
 
     private static bool _quittingHookRegistered;
+    private int _requestSeq;
 
     private void Awake()
     {
@@ -101,7 +108,10 @@ public class HololensAsrManager : MonoBehaviour
     {
         string full = "[ASR] " + line;
         Debug.Log(full);
-        AsrFileLog(full);
+        if (_writeAsrDebugFile)
+        {
+            AsrFileLog(full);
+        }
     }
 
     /// <summary>Optional GET /health per API doc (same host as POST /audio).</summary>
@@ -158,9 +168,16 @@ public class HololensAsrManager : MonoBehaviour
         if (IsRunning) return;
         if (Microphone.devices == null || Microphone.devices.Length == 0)
         {
-            if (string.IsNullOrEmpty(_logFilePath))
-                _logFilePath = Path.Combine(Application.persistentDataPath, "asr_debug.log");
-            EmitStatus("No microphone devices. Log: " + _logFilePath);
+            if (_writeAsrDebugFile)
+            {
+                if (string.IsNullOrEmpty(_logFilePath))
+                    _logFilePath = Path.Combine(Application.persistentDataPath, "asr_debug.log");
+                EmitStatus("No microphone devices. Log: " + _logFilePath);
+            }
+            else
+            {
+                EmitStatus("No microphone devices.");
+            }
             Debug.LogError("[ASR] No microphone device available.");
             OnMicrophoneNotReady?.Invoke();
             return;
@@ -169,9 +186,12 @@ public class HololensAsrManager : MonoBehaviour
         _micDevice = Microphone.devices[0];
         _chunksUploaded = 0;
         _loggedFirstChunk = false;
-        if (string.IsNullOrEmpty(_logFilePath))
-            _logFilePath = Path.Combine(Application.persistentDataPath, "asr_debug.log");
-        EmitStatus("Full log (always written): " + _logFilePath);
+        if (_writeAsrDebugFile)
+        {
+            if (string.IsNullOrEmpty(_logFilePath))
+                _logFilePath = Path.Combine(Application.persistentDataPath, "asr_debug.log");
+            EmitStatus("Debug file logging enabled: " + _logFilePath);
+        }
 
         EmitStatus($"Microphone.Start device='{_micDevice}' requestHz={_sampleRate} clipLen={_clipLengthSeconds}s");
         _micClip = Microphone.Start(_micDevice, true, _clipLengthSeconds, _sampleRate);
@@ -450,103 +470,116 @@ public class HololensAsrManager : MonoBehaviour
     private IEnumerator SendChunkToApi(byte[] float32Bytes)
     {
         _requestInFlight = true;
-        if (string.IsNullOrWhiteSpace(_asrApiUrl))
+        string requestId = "asr-" + System.Threading.Interlocked.Increment(ref _requestSeq).ToString("D5");
+        _requestAttemptCount++;
+        byte[] nextPending = null;
+
+        try
         {
-            Debug.LogWarning("[ASR] No API URL configured; skipping upload.");
-            OnApiRequestFinished?.Invoke(false);
-            _requestInFlight = false;
-            if (!IsRunning) yield break;
-            if (_pendingFloat32Bytes != null && _pendingFloat32Bytes.Length > 0)
+            if (string.IsNullOrWhiteSpace(_asrApiUrl))
             {
-                byte[] next = _pendingFloat32Bytes;
-                _pendingFloat32Bytes = null;
-                StartCoroutine(SendChunkToApi(next));
-            }
-
-            yield break;
-        }
-
-        if (float32Bytes.Length % 4 != 0)
-        {
-            EmitStatus("Invalid body: length not multiple of 4 (float32).");
-            OnApiRequestFinished?.Invoke(false);
-            _requestInFlight = false;
-            yield break;
-        }
-
-        using (UnityWebRequest req = new UnityWebRequest(_asrApiUrl, UnityWebRequest.kHttpVerbPOST))
-        {
-            req.uploadHandler = new UploadHandlerRaw(float32Bytes);
-            req.downloadHandler = new DownloadHandlerBuffer();
-            req.SetRequestHeader("Content-Type", "application/octet-stream");
-            req.SetRequestHeader("X-Sample-Rate", _sampleRate.ToString());
-            req.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
-            req.timeout = 45;
-            yield return req.SendWebRequest();
-
-            if (req.result != UnityWebRequest.Result.Success)
-            {
-                string errBody = req.downloadHandler?.text ?? "";
-                if (req.responseCode == 400 && !string.IsNullOrEmpty(errBody))
-                    EmitStatus("HTTP 400: " + (errBody.Length > 200 ? errBody.Substring(0, 200) + "…" : errBody));
-                else
-                    EmitStatus("POST /audio failed: " + req.error + " HTTP " + req.responseCode);
-                Debug.LogWarning("[ASR] API HTTP failed: " + req.error + " code=" + req.responseCode);
+                Debug.LogWarning("[ASR] " + requestId + " no API URL configured; skipping upload.");
+                _requestFailureCount++;
                 OnApiRequestFinished?.Invoke(false);
+                yield break;
             }
-            else
-            {
-                _chunksUploaded++;
-                string rawBody = req.downloadHandler?.text ?? string.Empty;
-                if (_chunksUploaded <= 3 || _chunksUploaded % 20 == 0)
-                {
-                    string preview = rawBody.Length > 160 ? rawBody.Substring(0, 160) + "…" : rawBody;
-                    EmitStatus($"HTTP 200 chunk #{_chunksUploaded} resp: {preview}");
-                }
 
-                string text = ExtractText(rawBody);
-                text = CleanHallucinatedPrefix(text);
-                if (string.IsNullOrWhiteSpace(text))
+            if (float32Bytes.Length % 4 != 0)
+            {
+                EmitStatus(requestId + " invalid body: length not multiple of 4 (float32).");
+                _requestFailureCount++;
+                OnApiRequestFinished?.Invoke(false);
+                yield break;
+            }
+
+            using (UnityWebRequest req = new UnityWebRequest(_asrApiUrl, UnityWebRequest.kHttpVerbPOST))
+            {
+                req.uploadHandler = new UploadHandlerRaw(float32Bytes);
+                req.downloadHandler = new DownloadHandlerBuffer();
+                req.SetRequestHeader("Content-Type", "application/octet-stream");
+                req.SetRequestHeader("X-Sample-Rate", _sampleRate.ToString());
+                req.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
+                req.timeout = 45;
+                yield return req.SendWebRequest();
+
+                if (req.result != UnityWebRequest.Result.Success)
                 {
-                    // API contract: HTTP 200 + {"text":""} is valid when chunk is silent/too short per server.
-                    if (Time.realtimeSinceStartup - _lastEmptyTranscriptLogTime >= 5f)
+                    string errBody = req.downloadHandler?.text ?? "";
+                    if (req.responseCode == 400 && !string.IsNullOrEmpty(errBody))
+                        EmitStatus(requestId + " HTTP 400: " + (errBody.Length > 200 ? errBody.Substring(0, 200) + "…" : errBody));
+                    else
+                        EmitStatus(requestId + " POST /audio failed: " + req.error + " HTTP " + req.responseCode);
+                    Debug.LogWarning("[ASR] " + requestId + " API HTTP failed: " + req.error + " code=" + req.responseCode);
+                    _requestFailureCount++;
+                    OnApiRequestFinished?.Invoke(false);
+                }
+                else
+                {
+                    _chunksUploaded++;
+                    _requestSuccessCount++;
+                    string rawBody = req.downloadHandler?.text ?? string.Empty;
+                    if (_chunksUploaded <= 3 || _chunksUploaded % 20 == 0)
                     {
-                        _lastEmptyTranscriptLogTime = Time.realtimeSinceStartup;
-                        Debug.Log(
-                            "[ASR] Empty transcript for this chunk (valid per API if quiet/short). " +
-                            "If this repeats while speaking, check mic level and clipHz→16kHz resampling.");
+                        string preview = rawBody.Length > 160 ? rawBody.Substring(0, 160) + "…" : rawBody;
+                        EmitStatus($"{requestId} HTTP 200 chunk #{_chunksUploaded} resp: {preview}");
                     }
 
-                    OnApiRequestFinished?.Invoke(true);
-                }
-                else
-                {
-                    string next = NormalizeCase(text);
-                    string prev = _latestText.ToString();
-                    if (ShouldAcceptTranscript(prev, next))
+                    string text = ExtractText(rawBody);
+                    text = CleanHallucinatedPrefix(text);
+                    if (string.IsNullOrWhiteSpace(text))
                     {
-                        _latestText.Length = 0;
-                        _latestText.Append(next);
-                        OnTextUpdated?.Invoke(_latestText.ToString());
+                        _requestParseEmptyCount++;
+                        // API contract: HTTP 200 + {"text":""} is valid when chunk is silent/too short per server.
+                        if (Time.realtimeSinceStartup - _lastEmptyTranscriptLogTime >= 5f)
+                        {
+                            _lastEmptyTranscriptLogTime = Time.realtimeSinceStartup;
+                            Debug.Log(
+                                "[ASR] Empty transcript for this chunk (valid per API if quiet/short). " +
+                                "If this repeats while speaking, check mic level and clipHz→16kHz resampling.");
+                        }
+
+                        OnApiRequestFinished?.Invoke(true);
                     }
                     else
                     {
-                        EmitStatus($"Filter skipped update (prev={prev.Length} next={next.Length}).");
-                    }
+                        string next = NormalizeCase(text);
+                        string prev = _latestText.ToString();
+                        if (ShouldAcceptTranscript(prev, next))
+                        {
+                            _latestText.Length = 0;
+                            _latestText.Append(next);
+                            OnTextUpdated?.Invoke(_latestText.ToString());
+                        }
+                        else
+                        {
+                            EmitStatus($"{requestId} filter skipped update (prev={prev.Length} next={next.Length}).");
+                        }
 
-                    OnApiRequestFinished?.Invoke(true);
+                        OnApiRequestFinished?.Invoke(true);
+                    }
                 }
             }
         }
-
-        _requestInFlight = false;
-        if (!IsRunning) yield break;
-
-        if (_pendingFloat32Bytes != null && _pendingFloat32Bytes.Length > 0)
+        finally
         {
-            byte[] next = _pendingFloat32Bytes;
-            _pendingFloat32Bytes = null;
-            StartCoroutine(SendChunkToApi(next));
+            _requestInFlight = false;
+            if ((_requestAttemptCount % 20) == 0)
+            {
+                EmitStatus(
+                    $"summary attempts={_requestAttemptCount} ok={_requestSuccessCount} fail={_requestFailureCount} emptyText={_requestParseEmptyCount} inFlight={(IsApiRequestInFlight ? 1 : 0)}");
+            }
+
+            if (_pendingFloat32Bytes != null && _pendingFloat32Bytes.Length > 0)
+            {
+                nextPending = _pendingFloat32Bytes;
+                _pendingFloat32Bytes = null;
+            }
+        }
+
+        if (!IsRunning) yield break;
+        if (nextPending != null && nextPending.Length > 0)
+        {
+            StartCoroutine(SendChunkToApi(nextPending));
         }
     }
 

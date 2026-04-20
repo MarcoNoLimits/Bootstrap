@@ -432,6 +432,10 @@
     background-color: rgba(205, 36, 49, 1);
 }
 
+.action-rail-btn-ita {
+    background-color: rgba(72, 38, 126, 0.96);
+}
+
 .action-rail-btn:hover {
     background-color: rgba(55, 165, 255, 1);
 }
@@ -448,6 +452,10 @@
     background-color: rgba(224, 52, 66, 1);
 }
 
+.action-rail-btn-ita:hover {
+    background-color: rgba(90, 50, 150, 0.98);
+}
+
 .action-rail-btn:active {
     background-color: rgba(20, 120, 220, 1);
 }
@@ -458,6 +466,10 @@
 
 .action-rail-btn-translation:active {
     background-color: rgba(176, 22, 35, 1);
+}
+
+.action-rail-btn-ita:active {
+    background-color: rgba(58, 29, 104, 1);
 }
 
 .action-rail-btn-settings {
@@ -487,6 +499,12 @@
     background-color: rgba(225, 48, 62, 1);
 }
 
+.action-rail-btn-ita.action-rail-btn-on {
+    background-color: rgba(132, 74, 212, 1);
+    border-width: 2px;
+    border-color: rgba(224, 192, 255, 0.95);
+}
+
 .action-rail-btn-on:hover {
     background-color: rgba(50, 185, 105, 0.95);
 }
@@ -501,6 +519,10 @@
 
 .action-rail-btn-translation.action-rail-btn-on:hover {
     background-color: rgba(230, 70, 84, 0.96);
+}
+
+.action-rail-btn-ita.action-rail-btn-on:hover {
+    background-color: rgba(122, 77, 196, 0.99);
 }
 
 /* Brief pinch feedback for SLR / Settings */

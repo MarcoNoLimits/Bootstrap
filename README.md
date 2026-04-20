@@ -35,3 +35,9 @@ Control the application logic by extending `App.cs`. UI elements are queried by 
 var startBtn = _root.Q<Button>("btn-start");
 startBtn.clicked += () => Debug.Log("✅ ASR Started");
 ```
+
+## Deployment docs
+
+- `UWP_HOLOLENS_DEPLOYMENT.md` - end-to-end export/deploy/debug runbook.
+- `UWP_CERTIFICATE_SETUP.md` - local signing certificate setup for UWP.
+- `RELEASE_GATE_CHECKLIST.md` - release readiness and soak-test gates.

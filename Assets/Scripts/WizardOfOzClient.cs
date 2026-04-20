@@ -16,6 +16,7 @@ using System.Text.RegularExpressions;
 [DefaultExecutionOrder(-50)]
 public class WizardOfOzClient : MonoBehaviour
 {
+    public static WizardOfOzClient Instance { get; private set; }
     [Header("Settings")]
     public string serverIP = "localhost";
     public int serverPort = 18080;
@@ -35,6 +36,8 @@ public class WizardOfOzClient : MonoBehaviour
 
     [Tooltip("API-only: seconds of silence after the last transcript before sending a finalized phrase (translation). Dictation fallback ignores this.")]
     [SerializeField] private float asrPhraseEndSilenceSeconds = 0.65f;
+    [Tooltip("If true, API mode can auto-fallback when no transcript is received for too long while speaking. Keep false to avoid silence-triggered mode switches.")]
+    [SerializeField] private bool allowApiSilenceAutoFallback = false;
 
     // UI Master Components (from legacy App.cs)
     private GameObject _mainUIRoot;
@@ -60,6 +63,8 @@ public class WizardOfOzClient : MonoBehaviour
     private float _listeningStallDeadline = -1f;
     private float _nextStallMessageAllowedTime;
     private string _lastModeBanner = "";
+    private bool _italianLocalAsrEnabled;
+    private bool _asrActive;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void AutoStart()
@@ -75,6 +80,7 @@ public class WizardOfOzClient : MonoBehaviour
 
     private void Awake()
     {
+        Instance = this;
         Debug.Log("[WizardOfOz] Unified Client Awake.");
         _mainCam = ResolveMainCamera();
     }
@@ -120,11 +126,12 @@ public class WizardOfOzClient : MonoBehaviour
             try {
                 _uiManager = new UIManager(_uiDoc);
                 _network = new NetworkManager(translationBaseUrl, translationApiKey);
-                _voice = new HybridVoiceManager(this, asrApiUrl, asrFallbackAfterConsecutiveFailures, asrPhraseEndSilenceSeconds);
-
-                WireEvents();
-                _voice.Start();
                 SubscribeAsrStallReset();
+                _asrActive = App.CurrentInputMode == App.InputMode.Asr;
+                if (_asrActive)
+                {
+                    CreateAndStartVoiceManager();
+                }
                 
                 Debug.Log("[WizardOfOz] System READY.");
             } catch (Exception e) {
@@ -242,7 +249,7 @@ public class WizardOfOzClient : MonoBehaviour
                 _nextStallMessageAllowedTime = 0f;
                 _uiManager.UpdateText($"Recognized: {text}");
             });
-            if (App.CurrentInputMode == App.InputMode.Asr && App.IsTranslationEnabled)
+            if (App.CurrentInputMode == App.InputMode.Asr && App.IsTranslationEnabled && !_italianLocalAsrEnabled)
             {
                 _network.SendTranslationRequest(text, (resp) => {
                     MainThreadDispatcher.RunOnMainThread(() => _uiManager.UpdateText(resp));
@@ -259,6 +266,87 @@ public class WizardOfOzClient : MonoBehaviour
             else
                 _uiManager.UpdateText($"Error: {err}");
         });
+
+        _uiManager.OnItalianTogglePressed -= ToggleItalianLocalAsr;
+        _uiManager.OnItalianTogglePressed += ToggleItalianLocalAsr;
+        _uiManager.SetItalianToggleState(_italianLocalAsrEnabled);
+    }
+
+    private void CreateAndStartVoiceManager()
+    {
+        try
+        {
+            _voice?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[WizardOfOz] Dispose old voice failed: " + ex.Message);
+        }
+
+        _voice = new HybridVoiceManager(
+            this,
+            asrApiUrl,
+            asrFallbackAfterConsecutiveFailures,
+            asrPhraseEndSilenceSeconds,
+            _italianLocalAsrEnabled,
+            allowApiSilenceAutoFallback);
+        WireEvents();
+        _voice.Start();
+    }
+
+    private void ToggleItalianLocalAsr()
+    {
+        SetItalianLocalAsrEnabled(!_italianLocalAsrEnabled);
+    }
+
+    public void SetItalianLocalAsrEnabled(bool enabled)
+    {
+        if (_italianLocalAsrEnabled == enabled)
+        {
+            return;
+        }
+
+        _italianLocalAsrEnabled = enabled;
+        _uiManager?.SetItalianToggleState(_italianLocalAsrEnabled);
+        _listeningStallDeadline = -1f;
+        _nextStallMessageAllowedTime = 0f;
+        if (_asrActive)
+        {
+            CreateAndStartVoiceManager();
+        }
+
+        if (_uiManager != null)
+        {
+            _uiManager.UpdateText(
+                _italianLocalAsrEnabled
+                    ? "Italian local ASR ON. Speak Italian and captions will show recognized text."
+                    : "Italian local ASR OFF. Switched back to English/API ASR.");
+        }
+    }
+
+    public void SetAsrActive(bool active)
+    {
+        if (_asrActive == active) return;
+        _asrActive = active;
+
+        if (_asrActive)
+        {
+            CreateAndStartVoiceManager();
+            return;
+        }
+
+        _listeningStallDeadline = -1f;
+        _nextStallMessageAllowedTime = 0f;
+        try
+        {
+            _voice?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[WizardOfOz] Dispose voice when ASR off: " + ex.Message);
+        }
+
+        _voice = null;
     }
 
     private void Update()
@@ -363,6 +451,8 @@ public class WizardOfOzClient : MonoBehaviour
     {
         if (HololensAsrManager.Instance != null)
             HololensAsrManager.Instance.OnApiRequestFinished -= OnAsrHttpRoundTrip;
+        if (_uiManager != null)
+            _uiManager.OnItalianTogglePressed -= ToggleItalianLocalAsr;
         try
         {
             _voice?.Dispose();
@@ -373,6 +463,7 @@ public class WizardOfOzClient : MonoBehaviour
         }
 
         _uiRT?.Release();
+        if (Instance == this) Instance = null;
     }
 }
 
@@ -382,15 +473,22 @@ public class UIManager
 {
     private Label _label;
     private Button _startBtn;
+    private Button _italianToggleBtn;
 
     public System.Action OnStartPressed;
     public System.Action OnStopPressed;
+    public System.Action OnItalianTogglePressed;
 
     public UIManager(UIDocument doc) {
         _label = doc.rootVisualElement.Q<Label>("subtitle-text");
         if (_label != null) {
             _label.text = "";
             _label.style.display = DisplayStyle.None;
+        }
+        _italianToggleBtn = doc.rootVisualElement.Q<Button>("btn-ita-asr-toggle");
+        if (_italianToggleBtn != null)
+        {
+            _italianToggleBtn.clicked += () => OnItalianTogglePressed?.Invoke();
         }
     }
     public void UpdateText(string t)
@@ -400,6 +498,15 @@ public class UIManager
         _label.style.display = hasText ? DisplayStyle.Flex : DisplayStyle.None;
         _label.text = hasText ? t : "";
     }
+
+    public void SetItalianToggleState(bool enabled)
+    {
+        if (_italianToggleBtn == null) return;
+        _italianToggleBtn.text = enabled ? "Switch to ITA · On" : "Switch to ITA · Off";
+        _italianToggleBtn.style.backgroundColor = enabled
+            ? new StyleColor(new Color(0.40f, 0.20f, 0.72f, 0.95f))
+            : new StyleColor(new Color(0.26f, 0.13f, 0.44f, 0.92f));
+    }
 }
 
 public class NetworkManager
@@ -407,6 +514,7 @@ public class NetworkManager
     private readonly string _baseUrl;
     private readonly string _apiKey;
     private DateTime _nextConnectionLogAllowedAt = DateTime.MinValue;
+    private int _translationRequestSeq;
 
     public NetworkManager(string baseUrl, string apiKey)
     {
@@ -414,29 +522,35 @@ public class NetworkManager
         _apiKey = apiKey != null ? apiKey.Trim() : "";
     }
 
-    public async void SendTranslationRequest(string text, Action<string> cb) {
+    public void SendTranslationRequest(string text, Action<string> cb) {
+        _ = SendTranslationRequestAsync(text, cb);
+    }
+
+    private async System.Threading.Tasks.Task SendTranslationRequestAsync(string text, Action<string> cb) {
         if (string.IsNullOrWhiteSpace(_baseUrl) || string.IsNullOrWhiteSpace(text)) {
             cb?.Invoke(text);
             return;
         }
 
+        string requestId = "nmt-" + System.Threading.Interlocked.Increment(ref _translationRequestSeq).ToString("D4");
         try {
             using (var client = new HttpClient())
             {
                 client.Timeout = TimeSpan.FromSeconds(70);
                 string url = _baseUrl + "/translate";
-                string translated = await TranslateOnce(client, url, text);
+                string translated = await TranslateOnce(client, url, text, requestId);
                 if (string.IsNullOrWhiteSpace(translated) || string.Equals(translated, text, StringComparison.Ordinal))
                 {
                     // HF Spaces may cold-start; retry once.
-                    translated = await TranslateOnce(client, url, text);
+                    translated = await TranslateOnce(client, url, text, requestId);
                 }
 
+                Debug.Log("[NetworkManager] " + requestId + " complete.");
                 cb?.Invoke(string.IsNullOrWhiteSpace(translated) ? text : translated);
             }
         } catch (Exception e) {
             if (DateTime.UtcNow >= _nextConnectionLogAllowedAt) {
-                Debug.LogWarning("[NetworkManager] Translation server unreachable at " + _baseUrl + "/translate. Keeping ASR text. " + e.Message);
+                Debug.LogWarning("[NetworkManager] " + requestId + " translation server unreachable at " + _baseUrl + "/translate. Keeping ASR text. " + e.Message);
                 _nextConnectionLogAllowedAt = DateTime.UtcNow.AddSeconds(8);
             }
             cb?.Invoke(text);
@@ -457,7 +571,7 @@ public class NetworkManager
         return Regex.Unescape(m.Groups["v"].Value).Trim();
     }
 
-    private async System.Threading.Tasks.Task<string> TranslateOnce(HttpClient client, string url, string text)
+    private async System.Threading.Tasks.Task<string> TranslateOnce(HttpClient client, string url, string text, string requestId)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, url);
         request.Content = new StringContent("{\"text\":\"" + EscapeJsonString(text) + "\"}", Encoding.UTF8, "application/json");
@@ -472,7 +586,7 @@ public class NetworkManager
         {
             if (DateTime.UtcNow >= _nextConnectionLogAllowedAt)
             {
-                Debug.LogWarning("[NetworkManager] NMT translate failed HTTP " + (int)resp.StatusCode + " at " + url + ". " + body);
+                Debug.LogWarning("[NetworkManager] " + requestId + " NMT translate failed HTTP " + (int)resp.StatusCode + " at " + url + ". " + body);
                 _nextConnectionLogAllowedAt = DateTime.UtcNow.AddSeconds(8);
             }
             return text;
@@ -694,7 +808,24 @@ public class MainThreadDispatcher : MonoBehaviour
 
     private void Awake() { _instance = this; }
 
-    private void Update() { lock (_q) { while (_q.Count > 0) _q.Dequeue().Invoke(); } }
+    private void Update()
+    {
+        lock (_q)
+        {
+            while (_q.Count > 0)
+            {
+                Action action = _q.Dequeue();
+                try
+                {
+                    action?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError("[MainThreadDispatcher] callback failed: " + ex);
+                }
+            }
+        }
+    }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void Init() {

@@ -31,10 +31,11 @@ public class App : MonoBehaviour
     private bool _audioOn;
     private bool _translationOn;
     private bool _signOn;
-    private Coroutine _settingsFlashRoutine;
     private Button _translationToggleBtn;
     private Button _asrToggleBtn;
     private Button _signToggleBtn;
+    private Button _itaToggleBtn;
+    private bool _italianAsrOn;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void AutoStart()
@@ -249,6 +250,22 @@ public class App : MonoBehaviour
                         _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
                 }
+
+                if (!_audioOn && _italianAsrOn)
+                {
+                    _italianAsrOn = false;
+                    if (_itaToggleBtn != null)
+                    {
+                        _itaToggleBtn.text = "Switch to ITA · Off";
+                        _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                    }
+
+                    var wizard = WizardOfOzClient.Instance;
+                    if (wizard != null)
+                    {
+                        wizard.SetItalianLocalAsrEnabled(false);
+                    }
+                }
             };
         }
 
@@ -271,6 +288,21 @@ public class App : MonoBehaviour
                     btnAudio.text = "Automatic Speech Recognition";
                     btnAudio.EnableInClassList("action-rail-btn-on", false);
                     SetAsrCaptureActive(false);
+                    if (_italianAsrOn)
+                    {
+                        _italianAsrOn = false;
+                        if (_itaToggleBtn != null)
+                        {
+                            _itaToggleBtn.text = "Switch to ITA · Off";
+                            _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                        }
+
+                        var wizard = WizardOfOzClient.Instance;
+                        if (wizard != null)
+                        {
+                            wizard.SetItalianLocalAsrEnabled(false);
+                        }
+                    }
                     if (_translationToggleBtn != null)
                     {
                         _translationOn = false;
@@ -289,16 +321,6 @@ public class App : MonoBehaviour
             };
         }
 
-        var btnSettingsRail = root.Q<Button>("btn-settings-rail");
-        if (btnSettingsRail != null)
-        {
-            btnSettingsRail.clicked += () =>
-            {
-                if (_settingsFlashRoutine != null) StopCoroutine(_settingsFlashRoutine);
-                _settingsFlashRoutine = StartCoroutine(FlashButtonLabel(btnSettingsRail, "Settings", "Saved", "action-rail-btn-flash", 0.65f));
-            };
-        }
-
         _translationToggleBtn = root.Q<Button>("btn-translation-toggle");
         if (_translationToggleBtn != null)
         {
@@ -310,6 +332,47 @@ public class App : MonoBehaviour
                 IsTranslationEnabled = _audioOn && _translationOn;
                 _translationToggleBtn.text = _translationOn ? "Translation · On" : "Translation · Off";
                 _translationToggleBtn.EnableInClassList("action-rail-btn-on", _translationOn);
+            };
+        }
+
+        _itaToggleBtn = root.Q<Button>("btn-ita-asr-toggle");
+        if (_itaToggleBtn != null)
+        {
+            _itaToggleBtn.text = "Switch to ITA · Off";
+            _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
+            _itaToggleBtn.clicked += () =>
+            {
+                _italianAsrOn = !_italianAsrOn;
+                _itaToggleBtn.text = _italianAsrOn ? "Switch to ITA · On" : "Switch to ITA · Off";
+                _itaToggleBtn.EnableInClassList("action-rail-btn-on", _italianAsrOn);
+
+                if (_italianAsrOn && !_audioOn)
+                {
+                    _audioOn = true;
+                    if (_asrToggleBtn != null)
+                    {
+                        _asrToggleBtn.text = "Automatic Speech Recognition · On";
+                        _asrToggleBtn.EnableInClassList("action-rail-btn-on", true);
+                    }
+
+                    CurrentInputMode = InputMode.Asr;
+                    IsTranslationEnabled = false;
+                    if (_translationToggleBtn != null)
+                    {
+                        _translationOn = false;
+                        _translationToggleBtn.style.display = DisplayStyle.Flex;
+                        _translationToggleBtn.text = "Translation · Off";
+                        _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                    }
+
+                    SetAsrCaptureActive(true);
+                }
+
+                var wizard = WizardOfOzClient.Instance;
+                if (wizard != null)
+                {
+                    wizard.SetItalianLocalAsrEnabled(_italianAsrOn);
+                }
             };
         }
 
@@ -349,20 +412,12 @@ public class App : MonoBehaviour
         }
     }
 
-    private IEnumerator FlashButtonLabel(Button btn, string defaultText, string flashText, string flashClass, float seconds)
-    {
-        btn.EnableInClassList(flashClass, true);
-        btn.text = flashText;
-        yield return new WaitForSeconds(seconds);
-        btn.EnableInClassList(flashClass, false);
-        btn.text = defaultText;
-    }
-
     private void InitializeDefaultMode()
     {
         _audioOn = false;
         _translationOn = false;
         _signOn = false;
+        _italianAsrOn = false;
         CurrentInputMode = InputMode.None;
         IsTranslationEnabled = false;
 
@@ -385,6 +440,12 @@ public class App : MonoBehaviour
             _translationToggleBtn.style.display = DisplayStyle.None;
         }
 
+        if (_itaToggleBtn != null)
+        {
+            _itaToggleBtn.text = "Switch to ITA · Off";
+            _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
+        }
+
         var signClient = FindObjectOfType<SignInferenceClient>();
         if (signClient != null)
         {
@@ -396,6 +457,13 @@ public class App : MonoBehaviour
 
     private static void SetAsrCaptureActive(bool active)
     {
+        var wizard = WizardOfOzClient.Instance;
+        if (wizard != null)
+        {
+            wizard.SetAsrActive(active);
+            return;
+        }
+
         var asr = HololensAsrManager.Instance;
         if (asr == null)
         {

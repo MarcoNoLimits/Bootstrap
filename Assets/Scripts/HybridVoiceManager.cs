@@ -18,6 +18,8 @@ public sealed class HybridVoiceManager : IDisposable
     private readonly int _fallbackAfterConsecutiveApiFailures;
     /// <summary>Silence after the last transcript update before firing <see cref="OnSentenceCompleted"/> (mirrors phrase-finalization pause; Windows dictation is typically ~0.5–1.2s).</summary>
     private readonly float _phraseEndSilenceSeconds;
+    private readonly bool _forceLocalDictationOnly;
+    private readonly bool _enableApiSilenceFallback;
 
     private VoiceManager _dictation;
     private Coroutine _finalizeSentenceCo;
@@ -41,17 +43,28 @@ public sealed class HybridVoiceManager : IDisposable
         MonoBehaviour coroutineHost,
         string primaryApiUrl,
         int fallbackAfterConsecutiveApiFailures = 5,
-        float phraseEndSilenceSeconds = 0.9f)
+        float phraseEndSilenceSeconds = 0.9f,
+        bool forceLocalDictationOnly = false,
+        bool enableApiSilenceFallback = false)
     {
         _host = coroutineHost;
         _primaryApiUrl = primaryApiUrl != null ? primaryApiUrl.Trim() : string.Empty;
         _fallbackAfterConsecutiveApiFailures = Mathf.Max(1, fallbackAfterConsecutiveApiFailures);
         _phraseEndSilenceSeconds = Mathf.Clamp(phraseEndSilenceSeconds, 0.35f, 3f);
+        _forceLocalDictationOnly = forceLocalDictationOnly;
+        _enableApiSilenceFallback = enableApiSilenceFallback;
     }
 
     public void Start()
     {
         if (_disposed) return;
+
+        if (_forceLocalDictationOnly)
+        {
+            Debug.Log("[HybridVoice] Local dictation-only mode active.");
+            StartDictationOnly();
+            return;
+        }
 
         if (string.IsNullOrEmpty(_primaryApiUrl))
         {
@@ -83,7 +96,10 @@ public sealed class HybridVoiceManager : IDisposable
             _host.StopCoroutine(_apiHealthWatchdogCo);
             _apiHealthWatchdogCo = null;
         }
-        _apiHealthWatchdogCo = _host.StartCoroutine(ApiHealthWatchdog());
+        if (_enableApiSilenceFallback)
+        {
+            _apiHealthWatchdogCo = _host.StartCoroutine(ApiHealthWatchdog());
+        }
         Debug.Log($"[HybridVoice] API mode active. URL starts with: {_primaryApiUrl.Substring(0, Mathf.Min(48, _primaryApiUrl.Length))}…");
         HololensAsrManager.Instance.StartAsr();
         if (!HololensAsrManager.Instance.IsRunning)

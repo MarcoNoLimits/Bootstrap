@@ -37,6 +37,7 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
     [SerializeField] private bool mirrorY = true;
 
     private Texture2D _rgbaTexture;
+    private float _nextSubsystemLogAt;
 
     private void Awake()
     {
@@ -61,6 +62,10 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
                 "[HololensPvCpuImageSource] No XRCameraSubsystem provider is registered. " +
                 "With OpenXR on HoloLens, upgrade com.unity.xr.arfoundation to 5.1+ (Unity docs: OpenXR as HoloLens AR Foundation provider). " +
                 "AR Foundation 4.x targeted the legacy Windows XR Plugin for PV.");
+        }
+        else
+        {
+            Debug.Log("[HololensPvCpuImageSource] XRCameraSubsystem providers: " + descs.Count);
         }
     }
 
@@ -103,6 +108,11 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
         if (arCameraManager.subsystem == null || !arCameraManager.subsystem.running)
         {
             errorMessage = "AR camera subsystem not running";
+            if (Time.realtimeSinceStartup >= _nextSubsystemLogAt)
+            {
+                _nextSubsystemLogAt = Time.realtimeSinceStartup + 5f;
+                Debug.LogWarning("[HololensPvCpuImageSource] " + errorMessage);
+            }
             return false;
         }
 

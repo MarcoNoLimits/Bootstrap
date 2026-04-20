@@ -97,7 +97,9 @@ public class SignInferenceClient : MonoBehaviour
     [Tooltip("Inference requests per second, independent from camera FPS.")]
     [SerializeField] private float requestFps = 5f;
     [Tooltip("When enabled, sends the first inference request as soon as startup capture is ready.")]
-    [SerializeField] private bool startCapturingOnLaunch = true;
+    [SerializeField] private bool startCapturingOnLaunch = false;
+    [Tooltip("Delay before first startup capture request to reduce scene-load contention on device.")]
+    [SerializeField] private float startupCaptureDelaySeconds = 1.25f;
     [Tooltip("Skip frame while one request is running.")]
     [SerializeField] private bool dropIfRequestInFlight = true;
     [Tooltip("Only attempt inference every Nth update tick (1 = every tick).")]
@@ -132,7 +134,7 @@ public class SignInferenceClient : MonoBehaviour
 
     [Header("Debug")]
     [Tooltip("CPU pipeline: log frame bytes, round-trip ms, detection vs no_hand, HTTP ok/fail, send FPS (see logEveryNSendAttempts for summaries).")]
-    [SerializeField] private bool logCpuPipelineDebug = true;
+    [SerializeField] private bool logCpuPipelineDebug = false;
     [Tooltip("If true, logs every raw predict_hand request. If false, only periodic summaries + errors.")]
     [SerializeField] private bool logEveryCpuPipelineRequest = false;
     [Tooltip("If enabled, saves occasional captured ROI JPGs to persistentDataPath/sign_debug.")]
@@ -140,7 +142,7 @@ public class SignInferenceClient : MonoBehaviour
     [Tooltip("Save one debug frame every N send attempts.")]
     [SerializeField] private int saveEveryNSends = 20;
     [Tooltip("If enabled, saves the first sent inference JPEGs exactly as posted to predict_hand.")]
-    [SerializeField] private bool saveFirstSentFrames = true;
+    [SerializeField] private bool saveFirstSentFrames = false;
     [Tooltip("How many sent inference frames to save for visual inspection.")]
     [SerializeField] private int saveFirstSentFramesCount = 30;
 
@@ -196,6 +198,7 @@ public class SignInferenceClient : MonoBehaviour
     private string _inferCaptionLine = "";
     private string _lastNetworkError = "";
     private bool _applicationIsQuitting;
+    private int _requestSequence;
 
     /// <summary>Same string as the on-screen sign caption (letter, spell text, hint). <see cref="XRDebugLogger"/> reads this for <c>xr-debug-hud</c> — never send/capture counters.</summary>
     public static string LiveCaptionForHud { get; private set; } = "";
@@ -264,6 +267,7 @@ public class SignInferenceClient : MonoBehaviour
         webCamStartMaxAttempts = Mathf.Max(1, webCamStartMaxAttempts);
         webCamRetryDelaySeconds = Mathf.Max(0.25f, webCamRetryDelaySeconds);
         logEveryNSendAttempts = Mathf.Max(1, logEveryNSendAttempts);
+        startupCaptureDelaySeconds = Mathf.Clamp(startupCaptureDelaySeconds, 0f, 8f);
 
         _roiTexture = new Texture2D(targetSize, targetSize, TextureFormat.RGB24, false);
         _debugFrameDir = Path.Combine(Application.persistentDataPath, "sign_debug");
@@ -280,8 +284,8 @@ public class SignInferenceClient : MonoBehaviour
         minSendIntervalMs = 175f;
         requestFps = 5f;
         dropIfRequestInFlight = true;
-        jpegQuality = 88;
-        maxSendFrameWidth = 640;
+        jpegQuality = 82;
+        maxSendFrameWidth = 512;
         inferEndpointPath = "/predict_hand";
         confidenceThreshold = 0.55f;
         uiDebounceSeconds = 0.12f;
@@ -350,6 +354,11 @@ public class SignInferenceClient : MonoBehaviour
 
     private void Start()
     {
+        Debug.Log(
+            "[SignInferenceClient] startup config " +
+            $"mode={App.CurrentInputMode} useXrCpuImagePipeline={useXrCpuImagePipeline} useWebCamTexture={useWebCamTexture} " +
+            $"baseUrl={baseUrl} endpointPath={inferEndpointPath} requestTimeoutSeconds={requestTimeoutSeconds:0.0} requestFps={requestFps:0.0}");
+
         if (useSubtitleLabelFallback)
         {
             StartCoroutine(BindToolkitCaptionLabelsWhenReady());
@@ -762,6 +771,11 @@ public class SignInferenceClient : MonoBehaviour
 
     private IEnumerator BeginCaptureOnLaunch()
     {
+        if (startupCaptureDelaySeconds > 0f)
+        {
+            yield return new WaitForSecondsRealtime(startupCaptureDelaySeconds);
+        }
+
         if (useXrCpuImagePipeline)
         {
             yield return null;
@@ -1181,6 +1195,7 @@ public class SignInferenceClient : MonoBehaviour
     {
         _requestInFlight = true;
         float startedAt = Time.realtimeSinceStartup;
+        string requestId = "sign-" + System.Threading.Interlocked.Increment(ref _requestSequence).ToString("D5");
         int jpegLen = jpegBytes?.Length ?? 0;
         string path = string.IsNullOrEmpty(inferEndpointPath) ? "/predict_hand" : inferEndpointPath;
         if (!path.StartsWith("/", StringComparison.Ordinal))
@@ -1193,7 +1208,7 @@ public class SignInferenceClient : MonoBehaviour
         if (!_loggedFirstRequest)
         {
             _loggedFirstRequest = true;
-            Debug.Log($"[SignInferenceClient] POST {url} (image/jpeg, {jpegLen} bytes)");
+            Debug.Log($"[SignInferenceClient] {requestId} POST {url} (image/jpeg, {jpegLen} bytes)");
         }
 
         using (UnityWebRequest req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
@@ -1214,7 +1229,7 @@ public class SignInferenceClient : MonoBehaviour
 
             if (req.result != UnityWebRequest.Result.Success)
             {
-                string err = "infer failed: " + req.error;
+                string err = requestId + " infer failed: " + req.error;
                 Debug.LogWarning("[SignInferenceClient] " + err);
                 _lastNetworkError = err;
                 Debug.LogWarning(
@@ -1224,7 +1239,7 @@ public class SignInferenceClient : MonoBehaviour
                 if (logCpuPipelineDebug && logEveryCpuPipelineRequest)
                 {
                     Debug.Log(
-                        $"[SignInferenceClient][cpu-pipe] jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} http=FAIL detection=n/a");
+                        $"[SignInferenceClient][cpu-pipe] req={requestId} jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} http=FAIL detection=n/a");
                 }
                 MaybeLogCpuPipelineSummary();
             }
@@ -1254,7 +1269,7 @@ public class SignInferenceClient : MonoBehaviour
                     if (logCpuPipelineDebug && logEveryCpuPipelineRequest)
                     {
                         Debug.LogWarning(
-                            $"[SignInferenceClient][cpu-pipe] jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} serverProcMs={(serverProcMs.HasValue ? serverProcMs.Value.ToString("0.0", CultureInfo.InvariantCulture) : "n/a")} http=OK parse=FAIL");
+                            $"[SignInferenceClient][cpu-pipe] req={requestId} jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} serverProcMs={(serverProcMs.HasValue ? serverProcMs.Value.ToString("0.0", CultureInfo.InvariantCulture) : "n/a")} http=OK parse=FAIL");
                     }
                     MaybeLogCpuPipelineSummary();
                 }
@@ -1267,7 +1282,7 @@ public class SignInferenceClient : MonoBehaviour
                             ? serverProcMs.Value.ToString("0.0", CultureInfo.InvariantCulture)
                             : "n/a";
                         Debug.Log(
-                            $"[SignInferenceClient][cpu-pipe] jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} serverProcMs={spStr} http=OK parse=OK detection={det} letter={response.letter} conf={response.confidence:0.000}");
+                            $"[SignInferenceClient][cpu-pipe] req={requestId} jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} serverProcMs={spStr} http=OK parse=OK detection={det} letter={response.letter} conf={response.confidence:0.000}");
                     }
 
                     if (!_loggedFirstSuccess)
@@ -1403,6 +1418,7 @@ public class SignInferenceClient : MonoBehaviour
     {
         _requestInFlight = true;
         float startedAt = Time.realtimeSinceStartup;
+        string requestId = "sign-" + System.Threading.Interlocked.Increment(ref _requestSequence).ToString("D5");
 
         string callUrl = TrimTrailingSlash(baseUrl) + "/gradio_api/call/predict";
         #region agent log
@@ -1416,7 +1432,7 @@ public class SignInferenceClient : MonoBehaviour
         if (!_loggedFirstRequest)
         {
             _loggedFirstRequest = true;
-            Debug.Log("[SignInferenceClient] Sending first inference request to " + callUrl);
+            Debug.Log("[SignInferenceClient] " + requestId + " sending first inference request to " + callUrl);
         }
 
         string imageDataUrl = "data:image/jpeg;base64," + Convert.ToBase64String(jpegBytes ?? Array.Empty<byte>());
@@ -1438,7 +1454,7 @@ public class SignInferenceClient : MonoBehaviour
                 string err =
                     "HTTP blocked by Unity Player setting. Set Player > Other Settings > Allow downloads over HTTP = Always allowed. " +
                     ex.Message;
-                Debug.LogError("[SignInferenceClient] " + err);
+                Debug.LogError("[SignInferenceClient] " + requestId + " " + err);
                 OnNetworkError?.Invoke(err);
                 _requestInFlight = false;
                 yield break;
@@ -1454,7 +1470,7 @@ public class SignInferenceClient : MonoBehaviour
 
             if (req.result != UnityWebRequest.Result.Success)
             {
-                string err = $"predict failed: {req.error}";
+                string err = $"{requestId} predict failed: {req.error}";
                 Debug.LogWarning("[SignInferenceClient] " + err);
                 _lastNetworkError = err;
                 float latencyMs = (Time.realtimeSinceStartup - startedAt) * 1000f;
@@ -1493,6 +1509,7 @@ public class SignInferenceClient : MonoBehaviour
                         if (streamReq.result != UnityWebRequest.Result.Success)
                         {
                             string err = $"predict stream failed: {streamReq.error}";
+                            err = requestId + " " + err;
                             Debug.LogWarning("[SignInferenceClient] " + err);
                             _lastNetworkError = err;
                             float latencyMs = (Time.realtimeSinceStartup - startedAt) * 1000f;

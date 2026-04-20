@@ -28,6 +28,8 @@ public class LocatableCameraArProjection : MonoBehaviour
 
     [Tooltip("If true, mirrors U (some runtimes / preview paths flip horizontally).")]
     [SerializeField] private bool mirrorImageX;
+    [Tooltip("Enable periodic camera subsystem log spam for deep diagnostics. Keep off for normal runs.")]
+    [SerializeField] private bool verboseCameraDiagnostics = false;
 
     private void Reset()
     {
@@ -88,6 +90,12 @@ public class LocatableCameraArProjection : MonoBehaviour
 
     private void Update()
     {
+        if (_arCameraManager == null || _camera == null)
+        {
+            CameraStatusLine = "cam:missing_refs";
+            return;
+        }
+
         if (!IntrinsicsReady && _arCameraManager != null)
         {
             if (_arCameraManager.TryGetIntrinsics(out _))
@@ -109,7 +117,10 @@ public class LocatableCameraArProjection : MonoBehaviour
             bool gotIntrinsics = _arCameraManager != null && _arCameraManager.TryGetIntrinsics(out intr);
             string intrRes = gotIntrinsics ? $"{intr.resolution.x}x{intr.resolution.y}" : "none";
             CameraStatusLine = $"cam enabled={camEnabled} sub={subsysExists} run={subsysRunning} intr={intrRes}";
-            Debug.Log($"[LocatableCameraArProjection] {CameraStatusLine}");
+            if (verboseCameraDiagnostics)
+            {
+                Debug.Log($"[LocatableCameraArProjection] {CameraStatusLine}");
+            }
         }
     }
 
