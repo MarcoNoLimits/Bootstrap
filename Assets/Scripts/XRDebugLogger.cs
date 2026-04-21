@@ -23,7 +23,6 @@ public class XRDebugLogger : MonoBehaviour
         }
 
         string status = "Hands: ";
-        GetDeviceStatus(XRNode.LeftHand, ref status);
         GetDeviceStatus(XRNode.RightHand, ref status);
         statusLabel.text = status;
     }

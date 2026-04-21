@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Text.RegularExpressions;
 using UnityEngine;
 #if UNITY_WSA && !UNITY_EDITOR
 using System.Threading.Tasks;
@@ -23,6 +24,8 @@ public sealed class HybridVoiceManager : IDisposable
     private readonly float _phraseEndSilenceSeconds;
     private readonly bool _forceLocalDictationOnly;
     private readonly bool _enableApiSilenceFallback;
+    private readonly bool _enableApiFailureFallback;
+    private readonly bool _enableApiEmptyResponseFallback;
     private readonly bool _useItalianWinRtSpeech;
 
     private VoiceManager _dictation;
@@ -32,6 +35,10 @@ public sealed class HybridVoiceManager : IDisposable
     private Coroutine _finalizeSentenceCo;
     private Coroutine _apiHealthWatchdogCo;
     private string _pendingTranslationText;
+    private string _lastCommittedSentence;
+    private float _lastCommittedAt = -999f;
+    private string _lastHypothesisText;
+    private float _lastHypothesisAt = -999f;
     private bool _disposed;
     private bool _usingApi;
     private int _consecutiveApiFailures;
@@ -50,9 +57,11 @@ public sealed class HybridVoiceManager : IDisposable
         MonoBehaviour coroutineHost,
         string primaryApiUrl,
         int fallbackAfterConsecutiveApiFailures = 5,
-        float phraseEndSilenceSeconds = 0.9f,
+        float phraseEndSilenceSeconds = 0.85f,
         bool forceLocalDictationOnly = false,
         bool enableApiSilenceFallback = false,
+        bool enableApiFailureFallback = false,
+        bool enableApiEmptyResponseFallback = false,
         bool useItalianWinRtSpeech = false)
     {
         _host = coroutineHost;
@@ -61,6 +70,8 @@ public sealed class HybridVoiceManager : IDisposable
         _phraseEndSilenceSeconds = Mathf.Clamp(phraseEndSilenceSeconds, 0.35f, 3f);
         _forceLocalDictationOnly = forceLocalDictationOnly;
         _enableApiSilenceFallback = enableApiSilenceFallback;
+        _enableApiFailureFallback = enableApiFailureFallback;
+        _enableApiEmptyResponseFallback = enableApiEmptyResponseFallback;
         _useItalianWinRtSpeech = useItalianWinRtSpeech;
     }
 
@@ -101,6 +112,8 @@ public sealed class HybridVoiceManager : IDisposable
         HololensAsrManager.Instance.OnMicrophoneNotReady += OnUnityMicNotReady;
         HololensAsrManager.Instance.OnMicrophoneReady -= OnUnityMicReady;
         HololensAsrManager.Instance.OnMicrophoneReady += OnUnityMicReady;
+        HololensAsrManager.Instance.OnRepeatedEmptySuccessfulApiResponses -= OnRepeatedEmptySuccessfulApiResponses;
+        HololensAsrManager.Instance.OnRepeatedEmptySuccessfulApiResponses += OnRepeatedEmptySuccessfulApiResponses;
 
         _usingApi = true;
         _consecutiveApiFailures = 0;
@@ -142,11 +155,21 @@ public sealed class HybridVoiceManager : IDisposable
     private void OnUnityMicNotReady()
     {
         Debug.LogWarning("[HybridVoice] Unity Microphone failed — switching to HoloLens dictation (same as before API).");
-        MainThreadDispatcher.RunOnMainThread(() =>
+        MainThreadDispatcher.RunOnMainThread(SwitchToDictationFallback);
+    }
+
+    private void OnRepeatedEmptySuccessfulApiResponses()
+    {
+        if (!_usingApi || _disposed) return;
+        if (!_enableApiEmptyResponseFallback)
         {
-            OnError?.Invoke(AsrFallbackUserMessage);
-            SwitchToDictationFallback();
-        });
+            // HTTP 200 with {"text":""} is valid for quiet/short chunks; keep API active and avoid caption spam.
+            Debug.Log("[HybridVoice] ASR returned repeated empty text chunks; continuing API mode.");
+            return;
+        }
+        Debug.LogWarning(
+            "[HybridVoice] Remote ASR returned HTTP 200 but no usable transcript repeatedly — switching to local dictation.");
+        MainThreadDispatcher.RunOnMainThread(SwitchToDictationFallback);
     }
 
     private void OnApiRequestFinished(bool success)
@@ -161,11 +184,16 @@ public sealed class HybridVoiceManager : IDisposable
         _consecutiveApiFailures++;
         if (_consecutiveApiFailures >= _fallbackAfterConsecutiveApiFailures)
         {
+            _consecutiveApiFailures = 0;
+            if (!_enableApiFailureFallback)
+            {
+                MainThreadDispatcher.RunOnMainThread(() =>
+                    OnError?.Invoke("ASR API had repeated failures but remains active. Retrying..."));
+                return;
+            }
             Debug.LogWarning(
                 "[HybridVoice] Custom ASR API failed repeatedly — switching to HoloLens / Windows dictation.");
-            MainThreadDispatcher.RunOnMainThread(() =>
-                OnError?.Invoke(AsrFallbackUserMessage));
-            SwitchToDictationFallback();
+            MainThreadDispatcher.RunOnMainThread(SwitchToDictationFallback);
         }
     }
 
@@ -199,8 +227,20 @@ public sealed class HybridVoiceManager : IDisposable
         {
             if (string.IsNullOrEmpty(text)) return;
             _lastTranscriptAt = Time.realtimeSinceStartup;
-            OnHypothesis?.Invoke(text);
-            _pendingTranslationText = text;
+            string hypothesis = NormalizeTranscriptForDedupe(text);
+            if (string.IsNullOrEmpty(hypothesis))
+            {
+                return;
+            }
+            if (string.Equals(_lastHypothesisText, hypothesis, StringComparison.OrdinalIgnoreCase)
+                && Time.realtimeSinceStartup - _lastHypothesisAt < 1.5f)
+            {
+                return;
+            }
+            _lastHypothesisText = hypothesis;
+            _lastHypothesisAt = Time.realtimeSinceStartup;
+            OnHypothesis?.Invoke(hypothesis);
+            _pendingTranslationText = hypothesis;
             if (_finalizeSentenceCo != null)
             {
                 _host.StopCoroutine(_finalizeSentenceCo);
@@ -241,9 +281,36 @@ public sealed class HybridVoiceManager : IDisposable
         {
             var t = _pendingTranslationText;
             _pendingTranslationText = null;
-            OnSentenceCompleted?.Invoke(t);
+            string normalized = NormalizeTranscriptForDedupe(t);
+            if (!string.IsNullOrEmpty(normalized))
+            {
+                bool duplicate = string.Equals(_lastCommittedSentence, normalized, StringComparison.OrdinalIgnoreCase)
+                    || (Time.realtimeSinceStartup - _lastCommittedAt < 1.2f
+                        && normalized.StartsWith(_lastCommittedSentence ?? "", StringComparison.OrdinalIgnoreCase)
+                        && normalized.Length <= (_lastCommittedSentence ?? "").Length + 4);
+                if (!duplicate)
+                {
+                    _lastCommittedSentence = normalized;
+                    _lastCommittedAt = Time.realtimeSinceStartup;
+                    OnSentenceCompleted?.Invoke(normalized);
+                }
+            }
             HololensAsrManager.Instance?.ClearTranscriptContext();
+            // Mic/API capture never stopped; re-signal listening so UI does not look idle after a pause.
+            MainThreadDispatcher.RunOnMainThread(() => OnListeningStarted?.Invoke());
         }
+    }
+
+    private static string NormalizeTranscriptForDedupe(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        string normalized = Regex.Replace(text.Trim(), "\\s+", " ");
+        normalized = Regex.Replace(normalized, "\\b(\\w+)(\\s+\\1\\b){1,}", "$1", RegexOptions.IgnoreCase);
+        return normalized.Trim(' ', '.', ',', ';', ':');
     }
 
     private void SwitchToDictationFallback()
@@ -268,6 +335,7 @@ public sealed class HybridVoiceManager : IDisposable
             HololensAsrManager.Instance.OnMicLevelUpdated -= OnMicLevelForBargeIn;
             HololensAsrManager.Instance.OnMicrophoneNotReady -= OnUnityMicNotReady;
             HololensAsrManager.Instance.OnMicrophoneReady -= OnUnityMicReady;
+            HololensAsrManager.Instance.OnRepeatedEmptySuccessfulApiResponses -= OnRepeatedEmptySuccessfulApiResponses;
             HololensAsrManager.Instance.StopAsr();
         }
 
@@ -343,6 +411,7 @@ public sealed class HybridVoiceManager : IDisposable
             HololensAsrManager.Instance.OnMicLevelUpdated -= OnMicLevelForBargeIn;
             HololensAsrManager.Instance.OnMicrophoneNotReady -= OnUnityMicNotReady;
             HololensAsrManager.Instance.OnMicrophoneReady -= OnUnityMicReady;
+            HololensAsrManager.Instance.OnRepeatedEmptySuccessfulApiResponses -= OnRepeatedEmptySuccessfulApiResponses;
             HololensAsrManager.Instance.StopAsr();
         }
 

@@ -1,8 +1,6 @@
-using System.Collections;
 using UnityEngine;
 using UnityEngine.UIElements;
 using UnityEngine.XR.Interaction.Toolkit;
-using System.Collections.Generic;
 
 public class App : MonoBehaviour
 {
@@ -17,14 +15,14 @@ public class App : MonoBehaviour
     [SerializeField] private float _smoothSpeed = 4f;
     [Tooltip("Positive = right side of the view (camera +X).")]
     [SerializeField] private float _rightOffsetMeters = 0.18f;
-    [Tooltip("Optional vertical nudge (camera +Y).")]
-    [SerializeField] private float _verticalOffsetMeters = -0.05f;
+    [Tooltip("Optional vertical nudge (camera +Y). Higher moves the panel up.")]
+    [SerializeField] private float _verticalOffsetMeters = 0.58f;
     [Header("Scene Background")]
     [SerializeField] private Color _sceneBackgroundColor = new Color(0f, 0f, 0f, 0f);
 
     // UI DIMENSIONS (must match USS .glass-panel-minimal)
     private float _uiWidth = 260f;
-    private float _uiHeight = 440f;
+    private float _uiHeight = 420f;
     private float _scale = 0.001f;
 
     private bool _audioOn;
@@ -56,7 +54,7 @@ public class App : MonoBehaviour
         _mainCam = ResolveMainCamera();
         CurrentInputMode = InputMode.None;
         IsTranslationEnabled = false;
-        
+
         // Initial jump to front (so you don't have to wait for it to fly in)
         if (_mainCam != null)
         {
@@ -209,23 +207,19 @@ public class App : MonoBehaviour
                 var wizard = WizardOfOzClient.Instance;
                 if (_audioOn && _italianAsrOn)
                 {
-                    // Keep English and Italian local dictation strictly separated.
                     _italianAsrOn = false;
                     if (_itaToggleBtn != null)
                     {
-                        _itaToggleBtn.text = "Switch to ITA · Off";
+                        _itaToggleBtn.text = "Switch to ASR Italian";
                         _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
-                    if (wizard != null)
-                    {
-                        wizard.SetItalianLocalAsrEnabled(false);
-                    }
+
+                    wizard?.SetItalianLocalAsrEnabled(false);
                 }
 
                 if (_audioOn)
                 {
                     wizard?.ClearSubtitleCaption();
-                    // Translation should be enabled by default whenever ASR turns on.
                     _translationOn = true;
                 }
 
@@ -256,8 +250,8 @@ public class App : MonoBehaviour
                     _translationToggleBtn.style.display = _audioOn ? DisplayStyle.Flex : DisplayStyle.None;
                     if (_audioOn)
                     {
-                        _translationToggleBtn.text = "Translation · On";
-                        _translationToggleBtn.EnableInClassList("action-rail-btn-on", true);
+                        _translationToggleBtn.text = _translationOn ? "Translation · On" : "Translation · Off";
+                        _translationToggleBtn.EnableInClassList("action-rail-btn-on", _translationOn);
                     }
                     if (!_audioOn)
                     {
@@ -298,16 +292,13 @@ public class App : MonoBehaviour
                         _italianAsrOn = false;
                         if (_itaToggleBtn != null)
                         {
-                            _itaToggleBtn.text = "Switch to ITA · Off";
+                            _itaToggleBtn.text = "Switch to ASR Italian";
                             _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
                         }
 
-                        var wizard = WizardOfOzClient.Instance;
-                        if (wizard != null)
-                        {
-                            wizard.SetItalianLocalAsrEnabled(false);
-                        }
+                        WizardOfOzClient.Instance?.SetItalianLocalAsrEnabled(false);
                     }
+
                     if (_translationToggleBtn != null)
                     {
                         _translationOn = false;
@@ -345,12 +336,20 @@ public class App : MonoBehaviour
         _itaToggleBtn = root.Q<Button>("btn-ita-asr-toggle");
         if (_itaToggleBtn != null)
         {
-            _itaToggleBtn.text = "Switch to ITA · Off";
+            _italianAsrOn = false;
+            _itaToggleBtn.text = "Switch to ASR Italian";
             _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
             _itaToggleBtn.clicked += () =>
             {
-                _italianAsrOn = !_italianAsrOn;
-                _itaToggleBtn.text = _italianAsrOn ? "Switch to ITA · On" : "Switch to ITA · Off";
+                var wizard = WizardOfOzClient.Instance;
+                if (wizard == null)
+                {
+                    return;
+                }
+
+                wizard.SetItalianLocalAsrEnabled(!_italianAsrOn);
+                _italianAsrOn = wizard.IsItalianLocalAsrEnabled;
+                _itaToggleBtn.text = _italianAsrOn ? "Italian ASR Active . ON" : "Switch to ASR Italian";
                 _itaToggleBtn.EnableInClassList("action-rail-btn-on", _italianAsrOn);
 
                 if (_italianAsrOn && _signOn)
@@ -362,22 +361,18 @@ public class App : MonoBehaviour
                         _signToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
 
-                    var signClient = FindObjectOfType<SignInferenceClient>();
-                    if (signClient != null)
-                    {
-                        signClient.SetSignCaptureActive(false);
-                    }
+                    FindObjectOfType<SignInferenceClient>()?.SetSignCaptureActive(false);
                 }
 
                 if (_italianAsrOn && _audioOn)
                 {
-                    // Keep modes exclusive: ITA ON turns English ASR mode OFF.
                     _audioOn = false;
                     if (_asrToggleBtn != null)
                     {
                         _asrToggleBtn.text = "Automatic Speech Recognition";
                         _asrToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
+
                     if (_translationToggleBtn != null)
                     {
                         _translationOn = false;
@@ -391,20 +386,11 @@ public class App : MonoBehaviour
                     ? InputMode.Asr
                     : (_audioOn ? InputMode.Asr : (_signOn ? InputMode.Sign : InputMode.None));
                 IsTranslationEnabled = _audioOn && _translationOn;
-
-                var wizard = WizardOfOzClient.Instance;
-                if (wizard != null)
-                {
-                    wizard.SetItalianLocalAsrEnabled(_italianAsrOn);
-                    _italianAsrOn = wizard.IsItalianLocalAsrEnabled;
-                }
-
-                _itaToggleBtn.text = _italianAsrOn ? "Switch to ITA · On" : "Switch to ITA · Off";
-                _itaToggleBtn.EnableInClassList("action-rail-btn-on", _italianAsrOn);
-
                 SetAsrCaptureActive(_italianAsrOn || _audioOn);
             };
         }
+
+        WizardOfOzClient.OnItalianLocalAsrStateChanged += SyncItalianToggleFromWizard;
 
         var debugHudLabel = root.Q<Label>("xr-debug-hud");
         if (debugHudLabel != null)
@@ -414,6 +400,23 @@ public class App : MonoBehaviour
         }
 
         InitializeDefaultMode();
+    }
+
+    private void OnDestroy()
+    {
+        WizardOfOzClient.OnItalianLocalAsrStateChanged -= SyncItalianToggleFromWizard;
+    }
+
+    private void SyncItalianToggleFromWizard(bool enabled)
+    {
+        _italianAsrOn = enabled;
+        if (_itaToggleBtn == null)
+        {
+            return;
+        }
+
+        _itaToggleBtn.text = enabled ? "Italian ASR Active . ON" : "Switch to ASR Italian";
+        _itaToggleBtn.EnableInClassList("action-rail-btn-on", enabled);
     }
 
     /// <summary>HoloLens/XR: prefer MainCamera; fallback to any enabled camera so world UI still parents correctly.</summary>
@@ -472,7 +475,7 @@ public class App : MonoBehaviour
 
         if (_itaToggleBtn != null)
         {
-            _itaToggleBtn.text = "Switch to ITA · Off";
+            _itaToggleBtn.text = "Switch to ASR Italian";
             _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
         }
 

@@ -36,9 +36,11 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
     [Tooltip("Mirror Y when converting (typical PV preview alignment).")]
     [SerializeField] private bool mirrorY = true;
 
-    private Texture2D _rgbaTexture;
+    private Texture2D _jpegSourceTexture;
+    private TextureFormat _jpegSourceFormat;
     private float _nextSubsystemLogAt;
     private float _nextStartupNudgeAt;
+    private float _nextBlackFrameLogAt;
 
     private void Awake()
     {
@@ -181,51 +183,85 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
                 RectInt inputRect = ComputeInputRect(iw, ih);
                 Vector2Int outDims = ComputeOutputDimensions(inputRect.width, inputRect.height);
 
-                var conversionParams = new XRCpuImage.ConversionParams
-                {
-                    inputRect = inputRect,
-                    outputDimensions = outDims,
-                    outputFormat = TextureFormat.RGBA32,
-                    transformation = mirrorY ? XRCpuImage.Transformation.MirrorY : XRCpuImage.Transformation.None
-                };
+                var transformation = mirrorY ? XRCpuImage.Transformation.MirrorY : XRCpuImage.Transformation.None;
+                TextureFormat[] tryFormats = { TextureFormat.RGB24, TextureFormat.RGBA32 };
 
-                int dataSize = image.GetConvertedDataSize(conversionParams);
-                if (dataSize <= 0)
+                foreach (TextureFormat fmt in tryFormats)
                 {
-                    errorMessage = "GetConvertedDataSize failed";
-                    return false;
+                    var conversionParams = new XRCpuImage.ConversionParams
+                    {
+                        inputRect = inputRect,
+                        outputDimensions = outDims,
+                        outputFormat = fmt,
+                        transformation = transformation
+                    };
+
+                    int dataSize = image.GetConvertedDataSize(conversionParams);
+                    if (dataSize <= 0)
+                    {
+                        continue;
+                    }
+
+                    NativeArray<byte> raw = new NativeArray<byte>(dataSize, Allocator.Temp);
+                    try
+                    {
+                        bool convertedOk = false;
+                        try
+                        {
+                            image.Convert(conversionParams, new NativeSlice<byte>(raw));
+                            convertedOk = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            errorMessage = "Convert: " + ex.Message;
+                        }
+
+                        if (!convertedOk)
+                        {
+                            continue;
+                        }
+
+                        if (IsRawBufferMostlyBlack(raw, fmt))
+                        {
+                            if (Time.realtimeSinceStartup >= _nextBlackFrameLogAt)
+                            {
+                                _nextBlackFrameLogAt = Time.realtimeSinceStartup + 4f;
+                                Debug.LogWarning(
+                                    "[HololensPvCpuImageSource] Dropping black PV frame (" + fmt +
+                                    "). If this repeats: close MRC/Device Portal camera, confirm ARCameraBackground, " +
+                                    "and try Player Settings → Multithreaded Rendering on.");
+                            }
+
+                            errorMessage = "PV frame is black (subsystem warming up or camera blocked)";
+                            continue;
+                        }
+
+                        EnsureJpegSourceTexture(outDims.x, outDims.y, fmt);
+                        _jpegSourceTexture.LoadRawTextureData(raw);
+                        _jpegSourceTexture.Apply(false, false);
+                    }
+                    finally
+                    {
+                        raw.Dispose();
+                    }
+
+                    jpegBytes = _jpegSourceTexture.EncodeToJPG(jpegQuality);
+                    if (jpegBytes == null || jpegBytes.Length == 0)
+                    {
+                        errorMessage = "JPEG encode failed";
+                        continue;
+                    }
+
+                    errorMessage = null;
+                    return true;
                 }
 
-                NativeArray<byte> raw = new NativeArray<byte>(dataSize, Allocator.Temp);
-                try
+                if (string.IsNullOrEmpty(errorMessage))
                 {
-                    image.Convert(conversionParams, new NativeSlice<byte>(raw));
-                }
-                catch (Exception ex)
-                {
-                    errorMessage = "Convert: " + ex.Message;
-                    return false;
+                    errorMessage = "PV conversion failed (no compatible format)";
                 }
 
-                try
-                {
-                    EnsureRgbaTexture(outDims.x, outDims.y);
-                    _rgbaTexture.LoadRawTextureData(raw);
-                    _rgbaTexture.Apply(false, false);
-                }
-                finally
-                {
-                    raw.Dispose();
-                }
-
-                jpegBytes = _rgbaTexture.EncodeToJPG(jpegQuality);
-                if (jpegBytes == null || jpegBytes.Length == 0)
-                {
-                    errorMessage = "JPEG encode failed";
-                    return false;
-                }
-
-                return true;
+                return false;
             }
             catch (Exception ex)
             {
@@ -349,27 +385,56 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
         return new Vector2Int(ow, oh);
     }
 
-    private void EnsureRgbaTexture(int w, int h)
+    private static bool IsRawBufferMostlyBlack(NativeArray<byte> raw, TextureFormat fmt)
     {
-        if (_rgbaTexture != null && _rgbaTexture.width == w && _rgbaTexture.height == h)
+        int bpp = fmt == TextureFormat.RGB24 ? 3 : 4;
+        if (raw.Length < bpp * 16)
+        {
+            return false;
+        }
+
+        int pixels = raw.Length / bpp;
+        int step = Mathf.Max(1, pixels / 600);
+        for (int p = 0; p < pixels; p += step)
+        {
+            int i = p * bpp;
+            if (i + 2 >= raw.Length)
+            {
+                break;
+            }
+
+            if (raw[i] > 12 || raw[i + 1] > 12 || raw[i + 2] > 12)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void EnsureJpegSourceTexture(int w, int h, TextureFormat fmt)
+    {
+        if (_jpegSourceTexture != null && _jpegSourceTexture.width == w && _jpegSourceTexture.height == h
+            && _jpegSourceFormat == fmt)
         {
             return;
         }
 
-        if (_rgbaTexture != null)
+        if (_jpegSourceTexture != null)
         {
-            Destroy(_rgbaTexture);
+            Destroy(_jpegSourceTexture);
         }
 
-        _rgbaTexture = new Texture2D(w, h, TextureFormat.RGBA32, false, false);
+        _jpegSourceFormat = fmt;
+        _jpegSourceTexture = new Texture2D(w, h, fmt, false, false);
     }
 
     private void OnDestroy()
     {
-        if (_rgbaTexture != null)
+        if (_jpegSourceTexture != null)
         {
-            Destroy(_rgbaTexture);
-            _rgbaTexture = null;
+            Destroy(_jpegSourceTexture);
+            _jpegSourceTexture = null;
         }
     }
 }

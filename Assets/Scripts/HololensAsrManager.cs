@@ -24,19 +24,36 @@ public class HololensAsrManager : MonoBehaviour
     public event Action OnMicrophoneNotReady;
     /// <summary>Fired once when <see cref="Microphone.IsRecording"/> becomes true and capture begins.</summary>
     public event Action OnMicrophoneReady;
+    /// <summary>Fired when many consecutive HTTP 200 responses parse to empty text (HF shape mismatch or silent chunks) — use to fall back to local dictation.</summary>
+    public event Action OnRepeatedEmptySuccessfulApiResponses;
     [Header("ASR API")]
     [Tooltip("Transcribe URL: POST raw float32 PCM mono (little-endian), Content-Type application/octet-stream, header X-Sample-Rate matching _sampleRate (e.g. 16000). Response JSON { \"text\": \"...\" }.")]
     [SerializeField] private string _asrApiUrl = "https://thedeezat-asr-hearing-impaired-api.hf.space/audio";
     [Tooltip("Write detailed ASR logs to persistentDataPath/asr_debug.log. Keep off for faster runtime on device.")]
     [SerializeField] private bool _writeAsrDebugFile = false;
     [SerializeField] private int _sampleRate = 16000;
-    [Tooltip("Minimum seconds of new audio before sending (in real time). Per API: very short chunks may return {\"text\":\"\"}.")]
-    [SerializeField] private float _chunkSeconds = 1.0f;
-    [SerializeField] private float _sendWindowSeconds = 8.0f;
+    [Tooltip("Minimum seconds of new audio before each POST. Lower values improve realtime response.")]
+    [SerializeField] private float _chunkSeconds = 0.85f;
+    [Tooltip("Sliding window length uploaded each request. Smaller windows reduce repeated transcripts.")]
+    [SerializeField] private float _sendWindowSeconds = 2.6f;
+    [Tooltip("Skip POST when chunk RMS is below this threshold (client-side silence guard).")]
+    [SerializeField] private float _minChunkRmsToSend = 0.0045f;
     [SerializeField] private int _clipLengthSeconds = 30;
     [Header("Microphone selection")]
     [Tooltip("If set, prefer a microphone whose device name contains this text (case-insensitive).")]
     [SerializeField] private string _preferredMicNameContains = "";
+    [Tooltip("After this many consecutive HTTP 200 responses with empty parsed text, raise OnRepeatedEmptySuccessfulApiResponses (HybridVoice switches to dictation).")]
+    [SerializeField] private int _emptyHttp200StreakBeforeFallback = 10;
+    [Header("Input level (matches HF Space preprocess: quiet audio is dropped server-side)")]
+    [Tooltip("Boost quiet microphone PCM so RMS passes the Space ASR_MIN_RMS gate (~0.007 after server high-pass). Disable only for debugging.")]
+    [SerializeField] private bool _adaptiveInputGain = true;
+    [SerializeField] private float _adaptiveGainTargetRms = 0.055f;
+    [SerializeField] private float _adaptiveGainMax = 14f;
+    [Tooltip("HF cold start / long clips; UnityWebRequest uses seconds.")]
+    [SerializeField] private int _requestTimeoutSeconds = 120;
+
+    /// <summary>Last <c>text_en</c> / <c>english</c> from Italian pipeline JSON, if present.</summary>
+    public string LastEnglishFromApi { get; private set; } = "";
 
     private AudioClip _micClip;
     private string _micDevice;
@@ -57,6 +74,7 @@ public class HololensAsrManager : MonoBehaviour
 
     private static bool _quittingHookRegistered;
     private int _requestSeq;
+    private int _emptyHttp200Streak;
 
     private void Awake()
     {
@@ -137,10 +155,28 @@ public class HololensAsrManager : MonoBehaviour
             _asrApiUrl = url.Trim();
     }
 
+    /// <summary>
+    /// Runtime tuning for different ASR backends (e.g. ENG vs ITA). Values are clamped to safe ranges.
+    /// </summary>
+    public void SetRuntimeTuning(
+        float chunkSeconds,
+        float sendWindowSeconds,
+        float minChunkRmsToSend,
+        float adaptiveGainTargetRms,
+        float adaptiveGainMax)
+    {
+        _chunkSeconds = Mathf.Clamp(chunkSeconds, 0.4f, 2.5f);
+        _sendWindowSeconds = Mathf.Clamp(sendWindowSeconds, _chunkSeconds + 0.2f, 6.0f);
+        _minChunkRmsToSend = Mathf.Clamp(minChunkRmsToSend, 0f, 0.03f);
+        _adaptiveGainTargetRms = Mathf.Clamp(adaptiveGainTargetRms, 0.01f, 0.2f);
+        _adaptiveGainMax = Mathf.Clamp(adaptiveGainMax, 1f, 24f);
+    }
+
     /// <summary>Clears the previous transcript used for deduplication. Call after a phrase is finalized or on new speech so the next utterance is not rejected.</summary>
     public void ClearTranscriptContext()
     {
         _latestText.Length = 0;
+        LastEnglishFromApi = "";
     }
 
     public void StartAsr()
@@ -185,6 +221,10 @@ public class HololensAsrManager : MonoBehaviour
 
         _lastMicSample = 0;
         _latestText.Length = 0;
+        LastEnglishFromApi = "";
+        _emptyHttp200Streak = 0;
+        _chunkSeconds = Mathf.Clamp(_chunkSeconds, 0.4f, 2.5f);
+        _sendWindowSeconds = Mathf.Clamp(_sendWindowSeconds, _chunkSeconds + 0.25f, 6.0f);
         CurrentMicLevel = 0f;
         IsRunning = true;
 
@@ -320,8 +360,8 @@ public class HololensAsrManager : MonoBehaviour
             }
 
             int windowSamples = Mathf.RoundToInt(clipHz * _sendWindowSeconds);
-            windowSamples = Mathf.Min(windowSamples, totalSamples);
-            float[] chunk = ExtractLatestSamples(currentPos, windowSamples, totalSamples);
+            int sendSamples = Mathf.Min(Mathf.Max(deltaSamples, minSamplesToSend), windowSamples);
+            float[] chunk = ExtractSamples(_lastMicSample, sendSamples, totalSamples);
             _lastMicSample = currentPos;
 
             if (clipHz != _sampleRate)
@@ -335,10 +375,59 @@ public class HololensAsrManager : MonoBehaviour
                 chunk = ResampleLinear(chunk, clipHz, _sampleRate);
             }
 
+            if (_adaptiveInputGain)
+                ApplyAdaptiveGain(chunk, _adaptiveGainTargetRms, _adaptiveGainMax);
+
+            if (ChunkRms(chunk) < Mathf.Max(0f, _minChunkRmsToSend))
+            {
+                // Empty transcripts are valid for quiet chunks; skip local silence to reduce no-op requests.
+                yield return null;
+                continue;
+            }
+
             byte[] float32Bytes = Float32ToBytes(chunk);
             QueueSend(float32Bytes);
             yield return null;
         }
+    }
+
+    /// <summary>
+    /// Raises quiet speech so the Space <c>preprocess_chunk</c> RMS check (ASR_MIN_RMS) does not reject the chunk as silence.
+    /// Server applies 80 Hz high-pass then requires RMS ≥ ~0.007; HoloLens mics are often softer than desktop.
+    /// </summary>
+    private static void ApplyAdaptiveGain(float[] samples, float targetRms, float maxGain)
+    {
+        if (samples == null || samples.Length == 0) return;
+        if (targetRms <= 0f || maxGain < 1f) return;
+
+        double sum = 0;
+        for (int i = 0; i < samples.Length; i++)
+        {
+            float s = samples[i];
+            sum += s * s;
+        }
+
+        float rms = (float)System.Math.Sqrt(sum / samples.Length);
+        const float silence = 1e-7f;
+        if (rms < silence || rms >= targetRms)
+            return;
+
+        float g = Mathf.Min(maxGain, targetRms / rms);
+        for (int i = 0; i < samples.Length; i++)
+            samples[i] = Mathf.Clamp(samples[i] * g, -1f, 1f);
+    }
+
+    private static float ChunkRms(float[] samples)
+    {
+        if (samples == null || samples.Length == 0) return 0f;
+        double sum = 0d;
+        for (int i = 0; i < samples.Length; i++)
+        {
+            float s = samples[i];
+            sum += s * s;
+        }
+
+        return (float)Math.Sqrt(sum / samples.Length);
     }
 
     /// <summary>Linear resample so POST body matches <see cref="_sampleRate"/> and X-Sample-Rate header.</summary>
@@ -476,7 +565,7 @@ public class HololensAsrManager : MonoBehaviour
                 req.SetRequestHeader("Content-Type", "application/octet-stream");
                 req.SetRequestHeader("X-Sample-Rate", _sampleRate.ToString());
                 req.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
-                req.timeout = 45;
+                req.timeout = Mathf.Clamp(_requestTimeoutSeconds, 30, 600);
                 yield return req.SendWebRequest();
 
                 if (req.result != UnityWebRequest.Result.Success)
@@ -501,11 +590,25 @@ public class HololensAsrManager : MonoBehaviour
                         EmitStatus($"{requestId} HTTP 200 chunk #{_chunksUploaded} resp: {preview}");
                     }
 
+                    LastEnglishFromApi = ExtractEnglishSidecar(rawBody);
+
                     string text = ExtractText(rawBody);
                     text = CleanHallucinatedPrefix(text);
+                    text = RemoveImmediateRepeatedWords(text);
+                    text = RemoveRepeatedTailPhrases(text);
                     if (string.IsNullOrWhiteSpace(text))
                     {
                         _requestParseEmptyCount++;
+                        _emptyHttp200Streak++;
+                        int threshold = Mathf.Max(3, _emptyHttp200StreakBeforeFallback);
+                        if (_emptyHttp200Streak >= threshold)
+                        {
+                            _emptyHttp200Streak = 0;
+                            Debug.LogWarning(
+                                "[ASR] Many consecutive HTTP 200 responses with empty parsed text — check JSON shape vs ExtractText, or use dictation fallback.");
+                            OnRepeatedEmptySuccessfulApiResponses?.Invoke();
+                        }
+
                         // API contract: HTTP 200 + {"text":""} is valid when chunk is silent/too short per server.
                         if (Time.realtimeSinceStartup - _lastEmptyTranscriptLogTime >= 5f)
                         {
@@ -515,10 +618,17 @@ public class HololensAsrManager : MonoBehaviour
                                 "If this repeats while speaking, check mic level and clipHz→16kHz resampling.");
                         }
 
+                        if (_chunksUploaded <= 5 && rawBody.Length > 8)
+                        {
+                            string dbg = rawBody.Length > 500 ? rawBody.Substring(0, 500) + "…" : rawBody;
+                            Debug.LogWarning("[ASR] Parse produced empty text; response sample: " + dbg);
+                        }
+
                         OnApiRequestFinished?.Invoke(true);
                     }
                     else
                     {
+                        _emptyHttp200Streak = 0;
                         string next = NormalizeCase(text);
                         string prev = _latestText.ToString();
                         if (ShouldAcceptTranscript(prev, next))
@@ -576,15 +686,106 @@ public class HololensAsrManager : MonoBehaviour
         return bytes;
     }
 
+    /// <summary>Unescapes a full JSON string literal (leading/trailing quotes included), e.g. a proxy body that is one quoted JSON object.</summary>
+    private static string UnescapeOuterJsonString(string raw)
+    {
+        if (raw == null || raw.Length < 2 || raw[0] != '"' || raw[raw.Length - 1] != '"')
+            return null;
+
+        var sb = new StringBuilder();
+        int i = 1;
+        int end = raw.Length - 1;
+        while (i < end)
+        {
+            char c = raw[i];
+            if (c == '\\' && i + 1 < end)
+            {
+                char n = raw[i + 1];
+                if (n == '"' || n == '\\' || n == '/') { sb.Append(n); i += 2; continue; }
+
+                if (n == 'n') { sb.Append('\n'); i += 2; continue; }
+
+                if (n == 'r') { sb.Append('\r'); i += 2; continue; }
+
+                if (n == 't') { sb.Append('\t'); i += 2; continue; }
+
+                if (n == 'b') { sb.Append('\b'); i += 2; continue; }
+
+                if (n == 'f') { sb.Append('\f'); i += 2; continue; }
+
+                if (n == 'u' && i + 5 < end)
+                {
+                    string hex = raw.Substring(i + 2, 4);
+                    if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out int code))
+                    {
+                        if (code >= 0 && code < 0xD800 || (code > 0xDFFF && code <= 0xFFFF))
+                            sb.Append((char)code);
+                        else if (code >= 0x10000 && code <= 0x10FFFF)
+                            sb.Append(char.ConvertFromUtf32(code));
+                        i += 6;
+                        continue;
+                    }
+                }
+
+                i += 2;
+                continue;
+            }
+
+            if (c == '"')
+                return null;
+
+            sb.Append(c);
+            i++;
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>Italian pipeline JSON often includes <c>text_en</c> (Flask) or <c>english</c> (Option A).</summary>
+    private static string ExtractEnglishSidecar(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        string t = TryReadJsonStringAfterKey(raw, "text_en");
+        if (!string.IsNullOrEmpty(t)) return t.Trim();
+        t = TryReadJsonStringAfterKey(raw, "english");
+        if (!string.IsNullOrEmpty(t)) return t.Trim();
+        return "";
+    }
+
     private static string ExtractText(string response)
     {
         if (string.IsNullOrWhiteSpace(response)) return string.Empty;
         string raw = response.Trim().TrimStart('\uFEFF');
 
+        // Some proxies return JSON as a quoted string: "{\"text\":\"hello\"}"
+        if (raw.Length >= 4 && raw[0] == '"' && raw[raw.Length - 1] == '"')
+        {
+            string inner = UnescapeOuterJsonString(raw);
+            if (!string.IsNullOrEmpty(inner))
+            {
+                string t = inner.TrimStart();
+                if (t.StartsWith("{") || t.StartsWith("["))
+                {
+                    string nested = ExtractText(inner);
+                    if (!string.IsNullOrWhiteSpace(nested)) return nested;
+                }
+            }
+        }
+
         // Plain text (no JSON)
         if (!raw.StartsWith("{") && !raw.StartsWith("["))
         {
             return raw;
+        }
+
+        // Option A proxy: { "italian": "...", "english": "..." }
+        Match mItalianKey = Regex.Match(
+            raw,
+            "\"italian\"\\s*:\\s*\"(?<v>(?:\\\\.|[^\"])*)\"",
+            RegexOptions.IgnoreCase);
+        if (mItalianKey.Success)
+        {
+            return Regex.Unescape(mItalianKey.Groups["v"].Value).Trim();
         }
 
         // Standard keys: "text" | "transcript" | …
@@ -659,7 +860,38 @@ public class HololensAsrManager : MonoBehaviour
         fallback = TryReadJsonStringAfterKey(raw, "transcript");
         if (!string.IsNullOrEmpty(fallback)) return fallback;
 
+        // Hugging Face / nested JSON: scan for longest quoted string among common keys (handles odd nesting).
+        fallback = ExtractLongestQuotedStringForKnownKeys(raw);
+        if (!string.IsNullOrEmpty(fallback)) return fallback;
+
         return string.Empty;
+    }
+
+    private static readonly string[] s_JsonTextKeys =
+    {
+        "italian", "text", "transcript", "transcription", "prediction", "result", "output", "generated_text", "message", "label", "value"
+    };
+
+    private static string ExtractLongestQuotedStringForKnownKeys(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        string best = "";
+        for (int i = 0; i < s_JsonTextKeys.Length; i++)
+        {
+            string key = s_JsonTextKeys[i];
+            MatchCollection matches = Regex.Matches(
+                raw,
+                "\"" + Regex.Escape(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"",
+                RegexOptions.IgnoreCase);
+            foreach (Match m in matches)
+            {
+                if (!m.Success) continue;
+                string s = Regex.Unescape(m.Groups[1].Value).Trim();
+                if (s.Length > best.Length) best = s;
+            }
+        }
+
+        return best;
     }
 
     /// <summary>Finds "key": "value" and returns value with basic escape handling.</summary>
@@ -723,11 +955,64 @@ public class HololensAsrManager : MonoBehaviour
         return t.Trim();
     }
 
+    private static string RemoveImmediateRepeatedWords(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+        string t = Regex.Replace(text.Trim(), "\\s+", " ");
+        t = Regex.Replace(t, "\\b(\\w+)(\\s+\\1\\b){1,}\\b", "$1", RegexOptions.IgnoreCase);
+        return t.Trim();
+    }
+
+    private static string RemoveRepeatedTailPhrases(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+        string t = Regex.Replace(text.Trim(), "\\s+", " ");
+        t = Regex.Replace(t, "\\b(\\w+(?:\\s+\\w+){1,5})\\s+\\1\\b", "$1", RegexOptions.IgnoreCase);
+        return t.Trim();
+    }
+
+    private static bool IsLikelyHallucination(string next)
+    {
+        if (string.IsNullOrWhiteSpace(next)) return true;
+        string n = next.Trim().ToLowerInvariant();
+        if (n.Length < 2) return true;
+        if (n == "thank you" || n == "thanks for watching" || n.StartsWith("subtitle") || n.StartsWith("captions"))
+            return true;
+        int words = Regex.Matches(n, "\\b\\w+\\b").Count;
+        if (words >= 5)
+        {
+            // If too many repeated tokens in one short line, it's often a decode hallucination.
+            MatchCollection wc = Regex.Matches(n, "\\b\\w+\\b");
+            var seen = new System.Collections.Generic.Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < wc.Count; i++)
+            {
+                string w = wc[i].Value;
+                if (!seen.ContainsKey(w)) seen[w] = 0;
+                seen[w]++;
+            }
+            foreach (var kv in seen)
+            {
+                if (kv.Value >= 4) return true;
+            }
+        }
+        return false;
+    }
+
     private static bool ShouldAcceptTranscript(string previous, string next)
     {
         if (string.IsNullOrWhiteSpace(next)) return false;
+        if (IsLikelyHallucination(next)) return false;
         if (string.IsNullOrWhiteSpace(previous)) return true;
         if (string.Equals(previous, next, StringComparison.Ordinal)) return false;
+        string prevNorm = RemoveRepeatedTailPhrases(RemoveImmediateRepeatedWords(previous));
+        string nextNorm = RemoveRepeatedTailPhrases(RemoveImmediateRepeatedWords(next));
+        if (string.Equals(prevNorm, nextNorm, StringComparison.OrdinalIgnoreCase))
+            return false;
+        // Keep stable context: reject abrupt tiny rewrites that do not overlap previous phrase.
+        if (previous.Length > 12 && next.Length < Mathf.FloorToInt(previous.Length * 0.65f)
+            && !previous.StartsWith(next, StringComparison.OrdinalIgnoreCase)
+            && !next.StartsWith(previous, StringComparison.OrdinalIgnoreCase))
+            return false;
         // Reject only if the new text looks like a spurious shrink of the same line (same start, much shorter).
         if (next.Length < Mathf.FloorToInt(previous.Length * 0.78f)
             && !Regex.IsMatch(next, "[.!?]$")

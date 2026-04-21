@@ -13,8 +13,8 @@
 
 /* Main HUD: only the action rail — no large plate (must match App.cs render texture size). */
 .glass-panel-minimal {
-    width: 180px;
-    height: 400px;
+    width: 260px;
+    height: 420px;
     background-color: rgba(0, 0, 0, 0);
     border-width: 0;
     padding: 0;
@@ -160,7 +160,6 @@
     bottom: 10px;
     flex-direction: row;
     align-items: center;
-    gap: 6px;
     padding-top: 2px;
     padding-bottom: 2px;
     padding-left: 8px;
@@ -172,6 +171,7 @@
 .translation-toggle-label {
     font-size: 11px;
     color: rgba(220, 235, 255, 0.75);
+    margin-right: 6px;
 }
 
 .translation-toggle-switch {
@@ -399,11 +399,11 @@
     flex-grow: 1;
     flex-shrink: 0;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
     align-items: stretch;
     align-self: stretch;
-    padding-top: 16px;
-    padding-bottom: 16px;
+    padding-top: 0;
+    padding-bottom: 12px;
     padding-left: 12px;
     padding-right: 12px;
     background-color: rgba(0, 0, 0, 0);
@@ -412,12 +412,14 @@
 }
 
 .action-rail-btn {
-    min-height: 56px;
-    margin-bottom: 14px;
+    width: 100%;
+    min-width: 220px;
+    min-height: 52px;
+    margin-bottom: 12px;
     padding-top: 8px;
     padding-bottom: 8px;
-    padding-left: 10px;
-    padding-right: 10px;
+    padding-left: 12px;
+    padding-right: 12px;
     background-color: rgba(50, 120, 200, 0.75);
     color: rgba(255, 255, 255, 0.98);
     font-size: 16px;
@@ -489,9 +491,11 @@
     margin-bottom: 0;
 }
 
-/* Audio “on” state after pinch (class toggled from App.cs) */
+/* Audio “on” state after pinch (class toggled from App.cs) — subtle off-white outline */
 .action-rail-btn-on {
     background-color: rgba(40, 160, 90, 0.92);
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.38);
 }
 
 .action-rail-btn-asr.action-rail-btn-on {
@@ -508,12 +512,11 @@
 
 .action-rail-btn-ita.action-rail-btn-on {
     background-color: rgba(132, 74, 212, 1);
-    border-width: 2px;
-    border-color: rgba(224, 192, 255, 0.95);
 }
 
 .action-rail-btn-on:hover {
     background-color: rgba(50, 185, 105, 0.95);
+    border-color: rgba(255, 255, 255, 0.52);
 }
 
 .action-rail-btn-asr.action-rail-btn-on:hover {
@@ -538,14 +541,47 @@
     color: rgba(30, 25, 10, 0.98);
 }
 
+.subtitle-text-label {
+    width: 100%;
+    max-width: none;
+    height: auto;
+    min-height: 0;
+    flex-shrink: 0;
+    -unity-text-align: upper-center;
+}
+
+.sign-inference-caption {
+    width: 100%;
+    padding-left: 4px;
+    padding-right: 4px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+    font-size: 14px;
+    line-height: 18px;
+    color: rgba(230, 245, 255, 0.95);
+    white-space: normal;
+    -unity-text-align: upper-left;
+    height: auto;
+    min-height: 28px;
+    margin-top: 6px;
+    flex-shrink: 0;
+}
+
 .xr-debug-hud {
     margin-top: 6px;
     padding-top: 4px;
+    padding-bottom: 4px;
+    padding-left: 4px;
+    padding-right: 4px;
     min-height: 28px;
+    width: 100%;
     font-size: 10px;
+    line-height: 13px;
     color: rgba(200, 220, 255, 0.7);
     white-space: normal;
-    -unity-text-align: middle-center;
+    -unity-text-align: upper-left;
+    height: auto;
+    flex-shrink: 0;
 }
 
 .icon-placeholder {

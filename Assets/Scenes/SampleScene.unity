@@ -1112,16 +1112,16 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   usePlatformDefaultApiUrl: 1
   baseUrl: http://192.168.1.42:8010
-  spell: 0
   sessionId: 
   requestTimeoutSeconds: 15
-  useXrCpuImagePipeline: 1
+  useXrCpuImagePipeline: 0
   pvCpuImageSource: {fileID: 1062420795}
   inferEndpointPath: /predict
   minSendIntervalMs: 175
   maxSendFrameWidth: 640
   cpuPipelineCropCenter: 0
   cpuPipelineCenterCropFraction: 0.92
+  hololensPvUseWebCamTexture: 1
   useWebCamTexture: 0
   hololensCameraOnly: 1
   allowEditorDesktopCamera: 0
@@ -1157,6 +1157,10 @@ MonoBehaviour:
   statusHintText: {fileID: 0}
   useSubtitleLabelFallback: 1
   confidenceThreshold: 0.55
+  minTop2Margin: 0.12
+  commitStableFrames: 3
+  autoSpaceNoHandFrames: 6
+  commitCooldownSeconds: 0.25
   uiDebounceSeconds: 0.12
   useServerTextAsAuthoritative: 1
   logCpuPipelineDebug: 1
@@ -1172,7 +1176,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1062420785}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: f71750b0ddbc6684db43233f32a4cc76, type: 3}
   m_Name: 
@@ -1696,7 +1700,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &1807992339
 Transform:
   m_ObjectHideFlags: 0

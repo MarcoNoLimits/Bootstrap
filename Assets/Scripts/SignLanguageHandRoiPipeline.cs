@@ -46,7 +46,8 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
     public LocatableCameraArProjection LocatableCamera => locatableCamera;
 
     [Header("Hand selection")]
-    [SerializeField] private SignDominantHandPolicy dominantPolicy = SignDominantHandPolicy.PreferRight;
+    [Tooltip("Right hand only — left hand is ignored for ROI (sign / tracking).")]
+    [SerializeField] private SignDominantHandPolicy dominantPolicy = SignDominantHandPolicy.RightOnly;
 
     [Header("ROI Config (Stage 1)")]
     [Tooltip("Padding added to all bbox sides. Matches contract baseline behavior (pad=40).")]
