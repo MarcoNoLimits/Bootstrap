@@ -297,9 +297,7 @@ public class SignInferenceClient : MonoBehaviour
         cpuPipelineCropCenter = false;
         centerCropScale = 1f;
 
-        // Always save sent frames for diagnosis until the pipeline is stable.
-        saveDebugFrames = true;
-        saveFirstSentFrames = true;
+        // Keep debug frame saving configurable from Inspector; forcing this ON on device can cause I/O stalls.
 
         if (combinedABMode)
         {

@@ -8,7 +8,9 @@ public class WorldUIInputBridge : MonoBehaviour
     public UIDocument uiDoc;
     public RenderTexture renderTexture;
     public Collider targetCollider;
-    [SerializeField] private bool enableHoverDwellClick = true;
+    [SerializeField] private bool enableHoverDwellClick = false;
+    [SerializeField] private bool enablePointerMoveEvents = false;
+    [SerializeField] private float hoverProcessIntervalSeconds = 0.03f;
     [SerializeField] private float hoverDwellSeconds = 0.16f;
     [SerializeField] private float hoverClickCooldownSeconds = 0.25f;
     [SerializeField] private float selectClickCooldownSeconds = 0.18f;
@@ -25,6 +27,7 @@ public class WorldUIInputBridge : MonoBehaviour
     private float _lastHoverClickTime = -999f;
     private float _lastSelectClickTime = -999f;
     private float _lastValidRayHitTime = -999f;
+    private float _lastHoverProcessTime = -999f;
     private Vector2 _smoothedPanelPos;
     private bool _hasSmoothedPanelPos;
 
@@ -82,15 +85,27 @@ public class WorldUIInputBridge : MonoBehaviour
         // Process Hover
         if (_isHovering && _currentInteractor != null)
         {
+            if (Time.time < _lastHoverProcessTime + Mathf.Clamp(hoverProcessIntervalSeconds, 0.01f, 0.2f))
+            {
+                return;
+            }
+
+            _lastHoverProcessTime = Time.time;
             if (TryGetUiRaycastHit(_currentInteractor, out RaycastHit hit) && hit.collider == targetCollider)
             {
                 Vector2 panelPos = UpdateSmoothedPanelPosition(HitToPanelPosition(hit));
                 _lastHoverPanelPos = panelPos;
                 _lastValidRayHitTime = Time.time;
-                MovePointer(panelPos);
-                MaybeHoverDwellClick(panelPos);
+                if (enablePointerMoveEvents)
+                {
+                    MovePointer(panelPos);
+                }
+                if (enableHoverDwellClick)
+                {
+                    MaybeHoverDwellClick(panelPos);
+                }
             }
-            else if (_hasSmoothedPanelPos && Time.time - _lastValidRayHitTime <= rayHitGraceSeconds)
+            else if (enablePointerMoveEvents && _hasSmoothedPanelPos && Time.time - _lastValidRayHitTime <= rayHitGraceSeconds)
             {
                 // Preserve pointer stability when right-hand pinch briefly drops 3D ray hits.
                 MovePointer(_smoothedPanelPos);

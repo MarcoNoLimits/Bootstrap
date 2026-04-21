@@ -26,6 +26,7 @@ public sealed class HybridVoiceManager : IDisposable
     private readonly bool _enableApiSilenceFallback;
     private readonly bool _enableApiFailureFallback;
     private readonly bool _enableApiEmptyResponseFallback;
+    private readonly bool _preferLocalThenApiFallback;
     private readonly bool _useItalianWinRtSpeech;
 
     private VoiceManager _dictation;
@@ -62,6 +63,7 @@ public sealed class HybridVoiceManager : IDisposable
         bool enableApiSilenceFallback = false,
         bool enableApiFailureFallback = false,
         bool enableApiEmptyResponseFallback = false,
+        bool preferLocalThenApiFallback = false,
         bool useItalianWinRtSpeech = false)
     {
         _host = coroutineHost;
@@ -72,6 +74,7 @@ public sealed class HybridVoiceManager : IDisposable
         _enableApiSilenceFallback = enableApiSilenceFallback;
         _enableApiFailureFallback = enableApiFailureFallback;
         _enableApiEmptyResponseFallback = enableApiEmptyResponseFallback;
+        _preferLocalThenApiFallback = preferLocalThenApiFallback;
         _useItalianWinRtSpeech = useItalianWinRtSpeech;
     }
 
@@ -93,9 +96,27 @@ public sealed class HybridVoiceManager : IDisposable
             return;
         }
 
+        if (_preferLocalThenApiFallback)
+        {
+            Debug.Log("[HybridVoice] Local dictation primary mode active (API fallback on local error).");
+            StartDictationOnly(localPrimaryWithApiFallback: true);
+            return;
+        }
+
         if (string.IsNullOrEmpty(_primaryApiUrl))
         {
             Debug.Log("[HybridVoice] No ASR API URL set — using HoloLens / Windows dictation only.");
+            StartDictationOnly();
+            return;
+        }
+
+        StartApiMode();
+    }
+
+    private void StartApiMode()
+    {
+        if (string.IsNullOrEmpty(_primaryApiUrl))
+        {
             StartDictationOnly();
             return;
         }
@@ -376,7 +397,7 @@ public sealed class HybridVoiceManager : IDisposable
     }
 #endif
 
-    private void StartDictationOnly()
+    private void StartDictationOnly(bool localPrimaryWithApiFallback = false)
     {
         if (_dictation != null) return;
 
@@ -384,7 +405,17 @@ public sealed class HybridVoiceManager : IDisposable
         _dictation.OnListeningStarted += () => OnListeningStarted?.Invoke();
         _dictation.OnHypothesis += (p) => OnHypothesis?.Invoke(p);
         _dictation.OnSentenceCompleted += (t) => OnSentenceCompleted?.Invoke(t);
-        _dictation.OnError += (e) => OnError?.Invoke(e);
+        _dictation.OnError += (e) =>
+        {
+            OnError?.Invoke(e);
+            if (localPrimaryWithApiFallback && !_disposed && !string.IsNullOrWhiteSpace(_primaryApiUrl))
+            {
+                Debug.LogWarning("[HybridVoice] Local dictation error -> switching to API fallback.");
+                _dictation?.Dispose();
+                _dictation = null;
+                StartApiMode();
+            }
+        };
         _dictation.Start();
     }
 

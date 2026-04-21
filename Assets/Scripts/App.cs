@@ -33,6 +33,7 @@ public class App : MonoBehaviour
     private Button _signToggleBtn;
     private Button _itaToggleBtn;
     private bool _italianAsrOn;
+    private float _nextSignCaptureEnsureAt;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void AutoStart()
@@ -81,6 +82,14 @@ public class App : MonoBehaviour
 
         // Run the "Tag-Along" logic every frame
         UpdatePosition(false); // false = smooth movement
+
+        // Safety: keep sign capture active whenever Sign mode is active.
+        // Other systems can occasionally toggle it off; re-assert at a low rate.
+        if (CurrentInputMode == InputMode.Sign && Time.time >= _nextSignCaptureEnsureAt)
+        {
+            _nextSignCaptureEnsureAt = Time.time + 0.6f;
+            FindObjectOfType<SignInferenceClient>()?.SetSignCaptureActive(true);
+        }
     }
 
     private void UpdatePosition(bool instant)

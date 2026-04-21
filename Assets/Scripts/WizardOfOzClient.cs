@@ -54,11 +54,13 @@ public class WizardOfOzClient : MonoBehaviour
     [Tooltip("English API tuning: max send window in seconds.")]
     [SerializeField] private float englishAsrSendWindowSeconds = 2.6f;
     [Tooltip("English API tuning: skip sending chunks quieter than this RMS.")]
-    [SerializeField] private float englishAsrMinChunkRms = 0.0045f;
+    [SerializeField] private float englishAsrMinChunkRms = 0.0018f;
     [Tooltip("English API tuning: adaptive gain target RMS.")]
     [SerializeField] private float englishAsrAdaptiveGainTargetRms = 0.055f;
     [Tooltip("English API tuning: adaptive gain cap.")]
     [SerializeField] private float englishAsrAdaptiveGainMax = 14f;
+    [Tooltip("English mode: start with on-device dictation, and switch to API only if local dictation errors.")]
+    [SerializeField] private bool preferLocalEnglishAsrWithApiFallback = false;
     [Tooltip("Italian API tuning: slightly longer chunk reduces empty-string responses on softer speech.")]
     [SerializeField] private float italianAsrChunkSeconds = 1.05f;
     [Tooltip("Italian API tuning: window length in seconds.")]
@@ -87,17 +89,19 @@ public class WizardOfOzClient : MonoBehaviour
 
     [Tooltip("Minimum time between stall messages so they do not spam every stall interval.")]
     [SerializeField] private float stallMessageCooldownSeconds = 120f;
+    [Tooltip("Throttle ASR partial-caption refreshes to avoid UI hitches while clicking buttons.")]
+    [SerializeField] private float hypothesisUiUpdateMinIntervalSeconds = 0.14f;
 
     [Tooltip("If false, never show the stall hint. When true, deadline refreshes on each ASR HTTP round-trip so empty transcripts do not trigger a false stall.")]
     [SerializeField] private bool showListeningStallHint = true;
     [Header("Subtitle panel placement")]
     [SerializeField] private int subtitleRenderTextureWidth = 1400;
     [SerializeField] private int subtitleRenderTextureHeight = 520;
-    [SerializeField] private float subtitlePanelWidthMeters = 1.35f;
+    [SerializeField] private float subtitlePanelWidthMeters = 1.12f;
     [SerializeField] private float subtitlePanelHeightMeters = 0.5f;
     [SerializeField] private float subtitleDistanceMeters = 1.2f;
-    [SerializeField] private float subtitleVerticalOffsetMeters = 0.0f;
-    [SerializeField] private bool autoResizeSubtitlePanel = true;
+    [SerializeField] private float subtitleVerticalOffsetMeters = -0.28f;
+    [SerializeField] private bool autoResizeSubtitlePanel = false;
     [SerializeField] private float subtitleAutoHeightPerLineMeters = 0.06f;
     [SerializeField] private float subtitlePanelMinHeightMeters = 0.28f;
     [SerializeField] private float subtitlePanelMaxHeightMeters = 1.1f;
@@ -110,6 +114,8 @@ public class WizardOfOzClient : MonoBehaviour
     private Transform _subtitleQuadTransform;
     private BoxCollider _subtitleQuadCollider;
     private int _subtitleEstimatedLines = 1;
+    private float _lastHypothesisUiUpdateAt = -999f;
+    private string _lastHypothesisUiText = "";
     public bool IsItalianLocalAsrEnabled => _italianAsrModeEnabled;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -230,35 +236,32 @@ public class WizardOfOzClient : MonoBehaviour
 
         quad.GetComponent<Renderer>().material = WorldUiQuadMaterial.Create(_uiRT);
 
-        // 5. Interaction
+        // 5. Keep subtitle panel display-only (non-interactive) so it never steals XR ray hits from action buttons.
         Destroy(quad.GetComponent<Collider>());
-        BoxCollider box = quad.AddComponent<BoxCollider>();
-        box.size = new Vector3(1, 1, 0.05f);
-        _subtitleQuadCollider = box;
-
-        // WorldUIInputBridge — translates XR ray hits into UI Toolkit pointer events
-        var bridge = _mainUIRoot.AddComponent<WorldUIInputBridge>();
-        bridge.uiDoc = _uiDoc;
-        bridge.renderTexture = _uiRT;
-        bridge.targetCollider = box;
-
-        // XRSimpleInteractable — makes the quad visible to XR ray interactors
-        var interactable = _mainUIRoot.AddComponent<XRSimpleInteractable>();
-        interactable.colliders.Clear();
-        interactable.colliders.Add(box);
-        interactable.selectEntered.AddListener(bridge.OnSelectEntered);
-        interactable.hoverEntered.AddListener(bridge.OnHoverEntered);
-        interactable.hoverExited.AddListener(bridge.OnHoverExited);
+        _subtitleQuadCollider = null;
 
         // Position it in front of camera
         if (_mainCam != null)
         {
-            Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * Mathf.Clamp(subtitleDistanceMeters, 0.6f, 2.5f));
-            target += _mainCam.transform.up * Mathf.Clamp(subtitleVerticalOffsetMeters, -0.6f, 0.6f);
-            _mainUIRoot.transform.position = target;
-            _mainUIRoot.transform.LookAt(_mainCam.transform);
-            _mainUIRoot.transform.Rotate(0, 180, 0);
+            AttachSubtitleToCamera();
         }
+    }
+
+    private void AttachSubtitleToCamera()
+    {
+        if (_mainUIRoot == null || _mainCam == null)
+        {
+            return;
+        }
+
+        // World-anchored subtitle: do not parent to camera, do not use local transforms.
+        _mainUIRoot.transform.SetParent(null, true);
+        Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * Mathf.Clamp(subtitleDistanceMeters, 0.6f, 2.5f));
+        target += _mainCam.transform.up * Mathf.Clamp(subtitleVerticalOffsetMeters, -0.6f, 0.6f);
+        _mainUIRoot.transform.position = target;
+        // One-time orientation only (no continuous rotation afterwards).
+        _mainUIRoot.transform.LookAt(_mainCam.transform.position, Vector3.up);
+        _mainUIRoot.transform.Rotate(0f, 180f, 0f);
     }
 
     private static string StallHintText()
@@ -298,7 +301,14 @@ public class WizardOfOzClient : MonoBehaviour
             if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
             if (!string.IsNullOrEmpty(partial)) {
-                _uiManager.UpdateText(ListeningPartialCaption(partial));
+                string caption = ListeningPartialCaption(partial);
+                float minInterval = Mathf.Clamp(hypothesisUiUpdateMinIntervalSeconds, 0.05f, 0.5f);
+                if (caption != _lastHypothesisUiText || Time.time - _lastHypothesisUiUpdateAt >= minInterval)
+                {
+                    _lastHypothesisUiText = caption;
+                    _lastHypothesisUiUpdateAt = Time.time;
+                    _uiManager.UpdateText(caption);
+                }
             }
         });
 
@@ -363,15 +373,79 @@ public class WizardOfOzClient : MonoBehaviour
     private string ResolveEffectiveAsrApiUrl()
     {
         if (!_italianAsrModeEnabled)
-            return asrApiUrl != null ? asrApiUrl.Trim() : "";
+            return NormalizeAsrAudioPostUrl(asrApiUrl != null ? asrApiUrl.Trim() : "", false);
 
         string it = italianAsrApiUrl != null ? italianAsrApiUrl.Trim() : "";
         if (!string.IsNullOrEmpty(it))
-            return it;
+            return NormalizeAsrAudioPostUrl(it, true);
 
         Debug.LogWarning(
             "[WizardOfOz] Italian ASR URL is empty — set Wizard Italian ASR URL to your POST /audio proxy (same float32 + X-Sample-Rate contract). Using English ASR URL until configured.");
-        return asrApiUrl != null ? asrApiUrl.Trim() : "";
+        return NormalizeAsrAudioPostUrl(asrApiUrl != null ? asrApiUrl.Trim() : "", false);
+    }
+
+    private static string NormalizeAsrAudioPostUrl(string raw, bool italianMode)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return "";
+        }
+
+        string u = raw.Trim();
+        if (!Uri.TryCreate(u, UriKind.Absolute, out Uri uri))
+        {
+            return u;
+        }
+
+        string host = uri.Host != null ? uri.Host.ToLowerInvariant() : "";
+        string path = (uri.AbsolutePath ?? "").Trim();
+        bool hasAudioPath = path.EndsWith("/audio", StringComparison.OrdinalIgnoreCase);
+        bool hasTranscribePath = path.EndsWith("/transcribe", StringComparison.OrdinalIgnoreCase);
+        bool hasGradioTranscribePath = path.EndsWith("/gradio_api/call/transcribe", StringComparison.OrdinalIgnoreCase);
+        bool isItalianGradioSpace = host.Contains("thedeezat-italian-speech-to-text.hf.space");
+
+        if (italianMode && isItalianGradioSpace)
+        {
+            if (!hasAudioPath && !hasGradioTranscribePath)
+            {
+                Debug.Log(
+                    "[WizardOfOz] Italian HF Space detected. Using Gradio endpoint /gradio_api/call/transcribe for ITA ASR.");
+            }
+        }
+
+        if (italianMode && isItalianGradioSpace && !hasAudioPath && !hasGradioTranscribePath)
+        {
+            if (hasTranscribePath)
+            {
+                string basePart = u.Substring(0, u.Length - "/transcribe".Length).TrimEnd('/');
+                return basePart + "/gradio_api/call/transcribe";
+            }
+
+            return u.TrimEnd('/') + "/gradio_api/call/transcribe";
+        }
+
+        if (hasTranscribePath)
+        {
+            if (italianMode)
+            {
+                string basePart = u.Substring(0, u.Length - "/transcribe".Length);
+                return basePart.TrimEnd('/') + "/gradio_api/call/transcribe";
+            }
+
+            // English/default client contract in this app is float32 body + X-Sample-Rate to /audio.
+            string basePartEn = u.Substring(0, u.Length - "/transcribe".Length);
+            return basePartEn.TrimEnd('/') + "/audio";
+        }
+
+        if (!hasAudioPath)
+        {
+            if (path == "/" || string.IsNullOrEmpty(path))
+            {
+                return u.TrimEnd('/') + "/audio";
+            }
+        }
+
+        return u;
     }
 
     private void CreateAndStartVoiceManager()
@@ -397,6 +471,7 @@ public class WizardOfOzClient : MonoBehaviour
             allowApiSilenceAutoFallback,
             allowApiFailureFallback,
             allowApiEmptyResponseFallback,
+            preferLocalEnglishAsrWithApiFallback && !_italianAsrModeEnabled,
             false);
         WireEvents();
         _voice.Start();
@@ -550,6 +625,14 @@ public class WizardOfOzClient : MonoBehaviour
         }
 
         _voice = null;
+        if (App.CurrentInputMode == App.InputMode.Sign)
+        {
+            var signClient = FindObjectOfType<SignInferenceClient>();
+            if (signClient != null)
+            {
+                signClient.SetSignCaptureActive(true);
+            }
+        }
     }
 
     private void Update()
@@ -562,9 +645,7 @@ public class WizardOfOzClient : MonoBehaviour
             ApplyDynamicSubtitlePanelHeight();
             Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * Mathf.Clamp(subtitleDistanceMeters, 0.6f, 2.5f));
             target += _mainCam.transform.up * Mathf.Clamp(subtitleVerticalOffsetMeters, -0.6f, 0.6f);
-            _mainUIRoot.transform.position = Vector3.Lerp(_mainUIRoot.transform.position, target, Time.deltaTime * 4.0f);
-            _mainUIRoot.transform.LookAt(_mainCam.transform);
-            _mainUIRoot.transform.Rotate(0, 180, 0);
+            _mainUIRoot.transform.position = Vector3.Lerp(_mainUIRoot.transform.position, target, Time.deltaTime * 6.0f);
         }
 
         if (_uiManager != null)

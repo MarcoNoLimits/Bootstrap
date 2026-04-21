@@ -51,6 +51,7 @@ public class HololensAsrManager : MonoBehaviour
     [SerializeField] private float _adaptiveGainMax = 14f;
     [Tooltip("HF cold start / long clips; UnityWebRequest uses seconds.")]
     [SerializeField] private int _requestTimeoutSeconds = 120;
+    private bool _warnedNonAudioEndpoint;
 
     /// <summary>Last <c>text_en</c> / <c>english</c> from Italian pipeline JSON, if present.</summary>
     public string LastEnglishFromApi { get; private set; } = "";
@@ -152,7 +153,10 @@ public class HololensAsrManager : MonoBehaviour
     public void SetApiUrl(string url)
     {
         if (!string.IsNullOrEmpty(url))
+        {
             _asrApiUrl = url.Trim();
+            _warnedNonAudioEndpoint = false;
+        }
     }
 
     /// <summary>
@@ -549,12 +553,28 @@ public class HololensAsrManager : MonoBehaviour
                 OnApiRequestFinished?.Invoke(false);
                 yield break;
             }
+            bool isGradioTranscribeCall =
+                _asrApiUrl.IndexOf("/gradio_api/call/transcribe", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isGradioTranscribeCall
+                && !_warnedNonAudioEndpoint
+                && _asrApiUrl.IndexOf("/audio", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                _warnedNonAudioEndpoint = true;
+                Debug.LogWarning(
+                    "[ASR] API URL does not include /audio. This client sends raw float32 PCM and expects a POST /audio endpoint.");
+            }
 
             if (float32Bytes.Length % 4 != 0)
             {
                 EmitStatus(requestId + " invalid body: length not multiple of 4 (float32).");
                 _requestFailureCount++;
                 OnApiRequestFinished?.Invoke(false);
+                yield break;
+            }
+
+            if (isGradioTranscribeCall)
+            {
+                yield return SendChunkToItalianGradioApi(requestId, float32Bytes);
                 yield break;
             }
 
@@ -667,6 +687,199 @@ public class HololensAsrManager : MonoBehaviour
         if (nextPending != null && nextPending.Length > 0)
         {
             StartCoroutine(SendChunkToApi(nextPending));
+        }
+    }
+
+    private IEnumerator SendChunkToItalianGradioApi(string requestId, byte[] float32Bytes)
+    {
+        byte[] wavBytes = Float32ToWavPcm16(float32Bytes, _sampleRate);
+        string dataUrl = "data:audio/wav;base64," + Convert.ToBase64String(wavBytes ?? Array.Empty<byte>());
+        string payloadPrimary = "{\"data\":[{\"name\":\"chunk.wav\",\"data\":\"" + dataUrl + "\"}]}";
+        string payloadFallback = "{\"data\":[\"" + dataUrl + "\"]}";
+        string callBody = "";
+        bool callOk = false;
+
+        using (UnityWebRequest callReq = new UnityWebRequest(_asrApiUrl, UnityWebRequest.kHttpVerbPOST))
+        {
+            callReq.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(payloadPrimary));
+            callReq.downloadHandler = new DownloadHandlerBuffer();
+            callReq.SetRequestHeader("Content-Type", "application/json");
+            callReq.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
+            callReq.timeout = Mathf.Clamp(_requestTimeoutSeconds, 30, 600);
+            yield return callReq.SendWebRequest();
+
+            callOk = callReq.result == UnityWebRequest.Result.Success;
+            callBody = callReq.downloadHandler?.text ?? "";
+        }
+
+        string eventId = callOk ? TryReadJsonStringAfterKey(callBody, "event_id") : "";
+        if (!callOk || string.IsNullOrWhiteSpace(eventId))
+        {
+            using (UnityWebRequest callReq2 = new UnityWebRequest(_asrApiUrl, UnityWebRequest.kHttpVerbPOST))
+            {
+                callReq2.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(payloadFallback));
+                callReq2.downloadHandler = new DownloadHandlerBuffer();
+                callReq2.SetRequestHeader("Content-Type", "application/json");
+                callReq2.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
+                callReq2.timeout = Mathf.Clamp(_requestTimeoutSeconds, 30, 600);
+                yield return callReq2.SendWebRequest();
+
+                callOk = callReq2.result == UnityWebRequest.Result.Success;
+                callBody = callReq2.downloadHandler?.text ?? "";
+                eventId = callOk ? TryReadJsonStringAfterKey(callBody, "event_id") : "";
+            }
+        }
+
+        if (!callOk || string.IsNullOrWhiteSpace(eventId))
+        {
+            EmitStatus(requestId + " Gradio call failed or missing event_id.");
+            _requestFailureCount++;
+            OnApiRequestFinished?.Invoke(false);
+            yield break;
+        }
+
+        string streamUrl = _asrApiUrl.TrimEnd('/') + "/" + eventId;
+        using (UnityWebRequest streamReq = UnityWebRequest.Get(streamUrl))
+        {
+            streamReq.timeout = Mathf.Clamp(_requestTimeoutSeconds, 30, 600);
+            streamReq.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
+            yield return streamReq.SendWebRequest();
+
+            if (streamReq.result != UnityWebRequest.Result.Success)
+            {
+                EmitStatus(requestId + " Gradio stream failed: " + streamReq.error + " HTTP " + streamReq.responseCode);
+                _requestFailureCount++;
+                OnApiRequestFinished?.Invoke(false);
+                yield break;
+            }
+
+            _chunksUploaded++;
+            _requestSuccessCount++;
+            string streamBody = streamReq.downloadHandler?.text ?? "";
+            bool parsedTuple = TryParseGradioItalianTuple(streamBody, out string it, out string en);
+            if (!parsedTuple)
+            {
+                // Fallback: some Gradio variants return JSON objects/quoted payloads instead of a plain tuple.
+                it = ExtractText(streamBody);
+                en = ExtractEnglishSidecar(streamBody);
+                parsedTuple = !string.IsNullOrWhiteSpace(it) || !string.IsNullOrWhiteSpace(en);
+            }
+
+            if (!parsedTuple)
+            {
+                _requestParseEmptyCount++;
+                _emptyHttp200Streak++;
+                if (Time.realtimeSinceStartup - _lastEmptyTranscriptLogTime >= 6f)
+                {
+                    _lastEmptyTranscriptLogTime = Time.realtimeSinceStartup;
+                    string preview = streamBody.Length > 360 ? streamBody.Substring(0, 360) + "…" : streamBody;
+                    Debug.LogWarning("[ASR] Italian Gradio parse failed. Sample: " + preview);
+                }
+                OnApiRequestFinished?.Invoke(false);
+                yield break;
+            }
+
+            string rawBody = "{\"italian\":\"" + EscapeJsonString(it) + "\",\"english\":\"" + EscapeJsonString(en) + "\"}";
+            LastEnglishFromApi = en ?? "";
+            string text = ExtractText(rawBody);
+            text = CleanHallucinatedPrefix(text);
+            text = RemoveImmediateRepeatedWords(text);
+            text = RemoveRepeatedTailPhrases(text);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                _requestParseEmptyCount++;
+                _emptyHttp200Streak++;
+                OnApiRequestFinished?.Invoke(true);
+                yield break;
+            }
+
+            _emptyHttp200Streak = 0;
+            string next = NormalizeCase(text);
+            string prev = _latestText.ToString();
+            if (ShouldAcceptTranscript(prev, next))
+            {
+                _latestText.Length = 0;
+                _latestText.Append(next);
+                OnTextUpdated?.Invoke(_latestText.ToString());
+            }
+
+            OnApiRequestFinished?.Invoke(true);
+        }
+    }
+
+    private static bool TryParseGradioItalianTuple(string body, out string italian, out string english)
+    {
+        italian = "";
+        english = "";
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        Match jsonData = Regex.Match(
+            body,
+            "\"data\"\\s*:\\s*\\[\\s*\"(?<it>(?:\\\\.|[^\"])*)\"\\s*,\\s*\"(?<en>(?:\\\\.|[^\"])*)\"",
+            RegexOptions.IgnoreCase);
+        if (jsonData.Success)
+        {
+            italian = Regex.Unescape(jsonData.Groups["it"].Value).Trim();
+            english = Regex.Unescape(jsonData.Groups["en"].Value).Trim();
+            return true;
+        }
+
+        Match lineData = Regex.Match(
+            body,
+            "data:\\s*\\[\\s*\"(?<it>(?:\\\\.|[^\"])*)\"\\s*,\\s*\"(?<en>(?:\\\\.|[^\"])*)\"",
+            RegexOptions.IgnoreCase);
+        if (lineData.Success)
+        {
+            italian = Regex.Unescape(lineData.Groups["it"].Value).Trim();
+            english = Regex.Unescape(lineData.Groups["en"].Value).Trim();
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string EscapeJsonString(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "";
+        return raw.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    }
+
+    private static byte[] Float32ToWavPcm16(byte[] float32Bytes, int sampleRate)
+    {
+        int sampleCount = float32Bytes != null ? float32Bytes.Length / 4 : 0;
+        short[] pcm = new short[sampleCount];
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float s = BitConverter.ToSingle(float32Bytes, i * 4);
+            s = Mathf.Clamp(s, -1f, 1f);
+            pcm[i] = (short)Mathf.RoundToInt(s * 32767f);
+        }
+
+        int dataBytes = pcm.Length * 2;
+        using (var ms = new MemoryStream(44 + dataBytes))
+        using (var bw = new BinaryWriter(ms))
+        {
+            bw.Write(Encoding.ASCII.GetBytes("RIFF"));
+            bw.Write(36 + dataBytes);
+            bw.Write(Encoding.ASCII.GetBytes("WAVE"));
+            bw.Write(Encoding.ASCII.GetBytes("fmt "));
+            bw.Write(16);
+            bw.Write((short)1); // PCM
+            bw.Write((short)1); // mono
+            bw.Write(Mathf.Max(1, sampleRate));
+            bw.Write(Mathf.Max(1, sampleRate) * 2);
+            bw.Write((short)2); // block align
+            bw.Write((short)16); // bits
+            bw.Write(Encoding.ASCII.GetBytes("data"));
+            bw.Write(dataBytes);
+            for (int i = 0; i < pcm.Length; i++)
+            {
+                bw.Write(pcm[i]);
+            }
+            return ms.ToArray();
         }
     }
 
@@ -971,6 +1184,7 @@ public class HololensAsrManager : MonoBehaviour
         return t.Trim();
     }
 
+
     private static bool IsLikelyHallucination(string next)
     {
         if (string.IsNullOrWhiteSpace(next)) return true;
@@ -1019,6 +1233,21 @@ public class HololensAsrManager : MonoBehaviour
             && previous.StartsWith(next.Trim(), StringComparison.OrdinalIgnoreCase))
         {
             return false;
+        }
+
+        // Guard against loop-style hallucinations where a line doubles itself.
+        string prevNorm2 = Regex.Replace(previous, "\\s+", " ").Trim();
+        string nextNorm2 = Regex.Replace(next, "\\s+", " ").Trim();
+        if (nextNorm2.Length > prevNorm2.Length * 1.4f
+            && nextNorm2.StartsWith(prevNorm2, StringComparison.OrdinalIgnoreCase))
+        {
+            string tail = nextNorm2.Substring(prevNorm2.Length).TrimStart();
+            if (!string.IsNullOrEmpty(tail)
+                && (prevNorm2.EndsWith(tail, StringComparison.OrdinalIgnoreCase)
+                    || tail.StartsWith(prevNorm2, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
         }
 
         return true;
