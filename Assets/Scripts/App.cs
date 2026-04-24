@@ -4,6 +4,7 @@ using UnityEngine.XR.Interaction.Toolkit;
 
 public class App : MonoBehaviour
 {
+    private static App _instance;
     public enum InputMode { None, Asr, Sign }
     public static InputMode CurrentInputMode { get; private set; } = InputMode.None;
     public static bool IsTranslationEnabled { get; private set; }
@@ -14,9 +15,9 @@ public class App : MonoBehaviour
     [SerializeField] private float _distance = 1.1f;
     [SerializeField] private float _smoothSpeed = 4f;
     [Tooltip("Positive = right side of the view (camera +X).")]
-    [SerializeField] private float _rightOffsetMeters = 0.18f;
+    [SerializeField] private float _rightOffsetMeters = 0.08f;
     [Tooltip("Optional vertical nudge (camera +Y). Higher moves the panel up.")]
-    [SerializeField] private float _verticalOffsetMeters = 0.58f;
+    [SerializeField] private float _verticalOffsetMeters = -0.04f;
     [Header("Scene Background")]
     [SerializeField] private Color _sceneBackgroundColor = new Color(0f, 0f, 0f, 0f);
 
@@ -34,6 +35,13 @@ public class App : MonoBehaviour
     private Button _itaToggleBtn;
     private bool _italianAsrOn;
     private float _nextSignCaptureEnsureAt;
+    private UIDocument _uiDocInstance;
+    private Renderer _uiRenderer;
+    private RenderTexture _uiRenderTexture;
+    private float _nextUiHealthLogAt;
+    private bool _uiRebuildAttempted;
+    private float _nextFacingLogAt;
+    private float _uiInitTime;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void AutoStart()
@@ -47,11 +55,22 @@ public class App : MonoBehaviour
 
     private void Awake()
     {
-        InitializeUI();
+        if (_instance != null && _instance != this)
+        {
+            Debug.LogWarning("[App] Duplicate App detected, destroying this instance.");
+            Destroy(gameObject);
+            return;
+        }
+        _instance = this;
     }
 
     private void Start()
     {
+        if (_mainUI == null)
+        {
+            InitializeUI();
+        }
+
         _mainCam = ResolveMainCamera();
         CurrentInputMode = InputMode.None;
         IsTranslationEnabled = false;
@@ -82,6 +101,7 @@ public class App : MonoBehaviour
 
         // Run the "Tag-Along" logic every frame
         UpdatePosition(false); // false = smooth movement
+        ValidateUiHealth();
 
         // Safety: keep sign capture active whenever Sign mode is active.
         // Other systems can occasionally toggle it off; re-assert at a low rate.
@@ -95,13 +115,19 @@ public class App : MonoBehaviour
     private void UpdatePosition(bool instant)
     {
         if (_mainUI == null) return;
+        if (!_mainUI.activeSelf) _mainUI.SetActive(true);
 
         // 1. Target position: in front of camera; optional small +X via _rightOffsetMeters
         Transform cam = _mainCam.transform;
+        float halfFovRad = 0.5f * _mainCam.fieldOfView * Mathf.Deg2Rad;
+        float visibleHalfHeightAtDistance = Mathf.Tan(halfFovRad) * _distance;
+        // Keep the panel safely inside the upper/lower visible region even if serialized values are extreme.
+        float clampedVerticalOffset = Mathf.Clamp(_verticalOffsetMeters, -visibleHalfHeightAtDistance * 0.8f, visibleHalfHeightAtDistance * 0.8f);
+
         Vector3 targetPos = cam.position
             + cam.forward * _distance
             + cam.right * _rightOffsetMeters
-            + cam.up * _verticalOffsetMeters;
+            + cam.up * clampedVerticalOffset;
 
         // 2. Move
         if (instant)
@@ -113,9 +139,28 @@ public class App : MonoBehaviour
             _mainUI.transform.position = Vector3.Lerp(_mainUI.transform.position, targetPos, Time.deltaTime * _smoothSpeed);
         }
 
-        // 3. Rotate to face camera (simple LookAt for Quad)
-        _mainUI.transform.LookAt(_mainCam.transform.position, Vector3.up);
-        _mainUI.transform.Rotate(0, 180, 0); // Quads face backwards effectively
+        // 3. Rotate to face camera with yaw only (keeps panel upright; avoids pitch/roll skew).
+        Vector3 toCamera = _mainCam.transform.position - _mainUI.transform.position;
+        Vector3 flatToCamera = Vector3.ProjectOnPlane(toCamera, Vector3.up);
+        if (flatToCamera.sqrMagnitude > 0.0001f)
+        {
+            // Quad front faces opposite in this setup; flip yaw so visible face and hit mapping align.
+            _mainUI.transform.rotation = Quaternion.LookRotation(-flatToCamera.normalized, Vector3.up);
+        }
+        if (Time.time >= _nextFacingLogAt)
+        {
+            _nextFacingLogAt = Time.time + 3f;
+            Vector3 toCameraNorm = (_mainCam.transform.position - _mainUI.transform.position).normalized;
+            float facingDot = Vector3.Dot(_mainUI.transform.forward, toCameraNorm);
+            if (facingDot < 0.15f)
+            {
+                Debug.LogWarning("[App] UI quad appears back-facing (dot=" + facingDot.ToString("F2") + ").");
+            }
+        }
+
+        // Safety: if any script disabled the quad renderer, force it back on.
+        var renderer = _mainUI.GetComponentInChildren<Renderer>(true);
+        if (renderer != null && !renderer.enabled) renderer.enabled = true;
     }
 
     private void InitializeUI()
@@ -128,6 +173,8 @@ public class App : MonoBehaviour
         int webHeight = Mathf.RoundToInt(_uiHeight);
         RenderTexture rt = new RenderTexture(webWidth, webHeight, 24);
         rt.name = "UIRenderTexture";
+        rt.Create();
+        _uiRenderTexture = rt;
 
         // 2. Setup Panel Settings
         var originalSettings = Resources.Load<PanelSettings>("UI/DefaultPanelSettings");
@@ -151,13 +198,15 @@ public class App : MonoBehaviour
         var mainLayout = Resources.Load<VisualTreeAsset>("UI/MainLayout");
         if (mainLayout == null)
         {
-            Debug.LogError("[App] MainLayout.uxml not found at Resources/UI/MainLayout — UI will be blank.");
+            Debug.LogError("[App] MainLayout.uxml not found at Resources/UI/MainLayout — UI cannot render.");
+            throw new System.InvalidOperationException("Missing UI/MainLayout resource.");
         }
         GameObject uiLogicObject = new GameObject("UILogic");
         uiLogicObject.transform.SetParent(_mainUI.transform, false);
         var uiDoc = uiLogicObject.AddComponent<UIDocument>();
         uiDoc.visualTreeAsset = mainLayout;
         uiDoc.panelSettings = runtimeSettings;
+        _uiDocInstance = uiDoc;
 
         // 4. Quad + MeshCollider (must match rendered UI): BoxCollider hits do not give mesh UVs; manual
         // local→panel mapping was wrong for top/bottom rows after LookAt, so only the middle (SLR) worked.
@@ -170,7 +219,19 @@ public class App : MonoBehaviour
         uiMeshCollider.convex = false;
 
         // 5. Material (project shader — built-in Unlit/* is often stripped on UWP/IL2CPP → magenta quad)
-        quad.GetComponent<Renderer>().material = WorldUiQuadMaterial.Create(rt);
+        _uiRenderer = quad.GetComponent<Renderer>();
+        _uiRenderer.material = WorldUiQuadMaterial.Create(rt);
+        if (_uiRenderer.material == null)
+        {
+            Debug.LogError("[App] WorldUiQuad material is null. UI texture will not render on quad.");
+        }
+        else
+        {
+            // Force a visible unlit surface on device (prevents hidden/transparent material states).
+            Material mat = _uiRenderer.material;
+            if (mat.HasProperty("_Color")) mat.SetColor("_Color", Color.white);
+            mat.renderQueue = 3000;
+        }
 
         // 6. Scale the Quad to match physical size
         // _uiWidth = 800, _scale = 0.001 => 0.8m width
@@ -206,11 +267,11 @@ public class App : MonoBehaviour
         _asrToggleBtn = btnAudio;
         if (btnAudio != null)
         {
-            btnAudio.text = "Automatic Speech Recognition";
+            btnAudio.text = "English Captions";
             btnAudio.clicked += () =>
             {
                 _audioOn = !_audioOn;
-                btnAudio.text = _audioOn ? "Automatic Speech Recognition · On" : "Automatic Speech Recognition";
+                btnAudio.text = _audioOn ? "English Captions · On" : "English Captions";
                 btnAudio.EnableInClassList("action-rail-btn-on", _audioOn);
 
                 var wizard = WizardOfOzClient.Instance;
@@ -219,7 +280,7 @@ public class App : MonoBehaviour
                     _italianAsrOn = false;
                     if (_itaToggleBtn != null)
                     {
-                        _itaToggleBtn.text = "Switch to ASR Italian";
+                        _itaToggleBtn.text = "Switch to Italian Captions";
                         _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
 
@@ -234,6 +295,7 @@ public class App : MonoBehaviour
 
                 CurrentInputMode = (_audioOn || _italianAsrOn) ? InputMode.Asr : (_signOn ? InputMode.Sign : InputMode.None);
                 IsTranslationEnabled = _audioOn && _translationOn;
+                HololensAsrManager.Instance?.SetForcedLanguage(_audioOn ? "english" : (_italianAsrOn ? "italian" : ""));
                 SetAsrCaptureActive(_audioOn || _italianAsrOn);
 
                 var signClient = FindObjectOfType<SignInferenceClient>();
@@ -294,14 +356,14 @@ public class App : MonoBehaviour
                 if (_signOn && (_audioOn || _italianAsrOn))
                 {
                     _audioOn = false;
-                    btnAudio.text = "Automatic Speech Recognition";
+                    btnAudio.text = "English Captions";
                     btnAudio.EnableInClassList("action-rail-btn-on", false);
                     if (_italianAsrOn)
                     {
                         _italianAsrOn = false;
                         if (_itaToggleBtn != null)
                         {
-                            _itaToggleBtn.text = "Switch to ASR Italian";
+                            _itaToggleBtn.text = "Switch to Italian Captions";
                             _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
                         }
 
@@ -346,7 +408,7 @@ public class App : MonoBehaviour
         if (_itaToggleBtn != null)
         {
             _italianAsrOn = false;
-            _itaToggleBtn.text = "Switch to ASR Italian";
+            _itaToggleBtn.text = "Switch to Italian Captions";
             _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
             _itaToggleBtn.clicked += () =>
             {
@@ -358,7 +420,7 @@ public class App : MonoBehaviour
 
                 wizard.SetItalianLocalAsrEnabled(!_italianAsrOn);
                 _italianAsrOn = wizard.IsItalianLocalAsrEnabled;
-                _itaToggleBtn.text = _italianAsrOn ? "Italian ASR Active . ON" : "Switch to ASR Italian";
+                _itaToggleBtn.text = _italianAsrOn ? "Italian Captions · On" : "Switch to Italian Captions";
                 _itaToggleBtn.EnableInClassList("action-rail-btn-on", _italianAsrOn);
 
                 if (_italianAsrOn && _signOn)
@@ -378,7 +440,7 @@ public class App : MonoBehaviour
                     _audioOn = false;
                     if (_asrToggleBtn != null)
                     {
-                        _asrToggleBtn.text = "Automatic Speech Recognition";
+                        _asrToggleBtn.text = "English Captions";
                         _asrToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
 
@@ -395,6 +457,7 @@ public class App : MonoBehaviour
                     ? InputMode.Asr
                     : (_audioOn ? InputMode.Asr : (_signOn ? InputMode.Sign : InputMode.None));
                 IsTranslationEnabled = _audioOn && _translationOn;
+                HololensAsrManager.Instance?.SetForcedLanguage(_italianAsrOn ? "italian" : (_audioOn ? "english" : ""));
                 SetAsrCaptureActive(_italianAsrOn || _audioOn);
             };
         }
@@ -409,10 +472,13 @@ public class App : MonoBehaviour
         }
 
         InitializeDefaultMode();
+        _uiInitTime = Time.time;
+        Debug.Log("[App] UI initialized: MainUI + UIDocument + RT quad are set.");
     }
 
     private void OnDestroy()
     {
+        if (_instance == this) _instance = null;
         WizardOfOzClient.OnItalianLocalAsrStateChanged -= SyncItalianToggleFromWizard;
     }
 
@@ -424,7 +490,7 @@ public class App : MonoBehaviour
             return;
         }
 
-        _itaToggleBtn.text = enabled ? "Italian ASR Active . ON" : "Switch to ASR Italian";
+        _itaToggleBtn.text = enabled ? "Italian Captions · On" : "Switch to Italian Captions";
         _itaToggleBtn.EnableInClassList("action-rail-btn-on", enabled);
     }
 
@@ -465,7 +531,7 @@ public class App : MonoBehaviour
 
         if (_asrToggleBtn != null)
         {
-            _asrToggleBtn.text = "Automatic Speech Recognition";
+            _asrToggleBtn.text = "English Captions";
             _asrToggleBtn.EnableInClassList("action-rail-btn-on", false);
         }
 
@@ -484,7 +550,7 @@ public class App : MonoBehaviour
 
         if (_itaToggleBtn != null)
         {
-            _itaToggleBtn.text = "Switch to ASR Italian";
+            _itaToggleBtn.text = "Switch to Italian Captions";
             _itaToggleBtn.EnableInClassList("action-rail-btn-on", false);
         }
 
@@ -522,5 +588,102 @@ public class App : MonoBehaviour
         {
             asr.StopAsr();
         }
+    }
+
+    private void ValidateUiHealth()
+    {
+        if (Time.time < _nextUiHealthLogAt) return;
+        _nextUiHealthLogAt = Time.time + 2.5f;
+
+        bool ok = true;
+        if (_mainUI == null)
+        {
+            ok = false;
+            Debug.LogError("[App] UI health: MainUI root is null.");
+        }
+        else if (!_mainUI.activeInHierarchy)
+        {
+            ok = false;
+            Debug.LogError("[App] UI health: MainUI exists but is inactive in hierarchy.");
+        }
+
+        if (_uiDocInstance == null)
+        {
+            ok = false;
+            Debug.LogError("[App] UI health: UIDocument component missing.");
+        }
+        else if (_uiDocInstance.rootVisualElement == null)
+        {
+            ok = false;
+            Debug.LogError("[App] UI health: UIDocument rootVisualElement is null.");
+        }
+        else if (_uiDocInstance.rootVisualElement.childCount == 0)
+        {
+            ok = false;
+            Debug.LogError("[App] UI health: rootVisualElement has zero children (layout not bound).");
+        }
+
+        if (_uiRenderer == null)
+        {
+            ok = false;
+            Debug.LogError("[App] UI health: Quad renderer missing.");
+        }
+        else if (!_uiRenderer.enabled)
+        {
+            ok = false;
+            Debug.LogError("[App] UI health: Quad renderer disabled.");
+        }
+        else if (_uiRenderer.sharedMaterial == null)
+        {
+            ok = false;
+            Debug.LogError("[App] UI health: Quad material missing.");
+        }
+        else if (_uiRenderer.sharedMaterial.mainTexture == null)
+        {
+            ok = false;
+            Debug.LogError("[App] UI health: Quad material has no mainTexture.");
+        }
+
+        if (_uiRenderTexture == null)
+        {
+            ok = false;
+            Debug.LogError("[App] UI health: RenderTexture is null.");
+        }
+        else if (!_uiRenderTexture.IsCreated())
+        {
+            // Editor startup can report false negatives in first moments after Play.
+            bool warmupExpired = (Time.time - _uiInitTime) > 2.0f;
+            if (warmupExpired)
+            {
+                ok = false;
+                Debug.LogError("[App] UI health: RenderTexture not created.");
+            }
+            else
+            {
+                _uiRenderTexture.Create();
+            }
+        }
+
+        if (ok)
+        {
+            Debug.Log("[App] UI health: OK.");
+            return;
+        }
+
+        if (_uiRebuildAttempted) return;
+        _uiRebuildAttempted = true;
+        Debug.LogError("[App] UI health failed. Rebuilding UI once...");
+
+        if (_mainUI != null)
+        {
+            Destroy(_mainUI);
+            _mainUI = null;
+        }
+
+        _uiDocInstance = null;
+        _uiRenderer = null;
+        _uiRenderTexture = null;
+        InitializeUI();
+        UpdatePosition(true);
     }
 }

@@ -1006,8 +1006,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _distance: 1.1
   _smoothSpeed: 4
-  _rightOffsetMeters: 0.18
-  _verticalOffsetMeters: -0.05
+  _rightOffsetMeters: 0.08
+  _verticalOffsetMeters: -0.04
   _sceneBackgroundColor: {r: 0, g: 0, b: 0, a: 0}
 --- !u!4 &1062420787
 Transform:

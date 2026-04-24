@@ -9,6 +9,15 @@ using UnityEngine.Networking;
 using UnityEngine.UI;
 using UnityEngine.UIElements;
 
+/*
+1. Memory cleanıng
+2. do not show confıdence % 
+3. better ui for no hand
+4. no spacing 
+5. after each word completed, the server should correct the word
+*/
+
+
 [Serializable]
 public class InferResponse
 {
@@ -140,7 +149,7 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private int wordPauseMs = 0;
 #pragma warning restore 0414
 
-    [Header("UI")]
+    [Header("UI & Captions")]
     [SerializeField] private Text letterText;
     [SerializeField] private Text serverText;
     [SerializeField] private Text statusHintText;
@@ -153,10 +162,28 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private int fastCommitStableFrames = 2;
     [Tooltip("Use fast commit stability only when confidence is at least this value.")]
     [SerializeField] private float fastCommitConfidenceThreshold = 0.75f;
-    [SerializeField] private int autoSpaceNoHandFrames = 6;
     [SerializeField] private float commitCooldownSeconds = 0.25f;
     [SerializeField] private float uiDebounceSeconds = 0.08f;
     [SerializeField] private bool useServerTextAsAuthoritative = true;
+
+    [Header("Caption Logic")]
+    [SerializeField] private int autoSpaceNoHandFrames = 6;
+    [SerializeField] private int endSentenceNoHandFrames = 15;
+    [SerializeField] private int autoClearNoHandFrames = 40;
+    [SerializeField] private int maxCharsPerLine = 40;
+    [SerializeField] private int maxHistoryChars = 96;
+    [SerializeField] private int maxCompletedSentences = 2;
+    [SerializeField] private string noHandFriendlyMessage = "Show your hand to start signing";
+    [Header("Local Word Correction (fast, no network)")]
+    [SerializeField] private bool enableLocalWordCorrection = true;
+    [Tooltip("Max edit distance for local correction candidate search.")]
+    [SerializeField] private int localCorrectionMaxEditDistance = 1;
+
+    [Header("HUD Orientation")]
+    [Tooltip("If true, the HUD UI will automatically rotate to face the camera (Billboarding).")]
+    [SerializeField] private bool useBillboardHud = true;
+    [Tooltip("Speed at which the HUD rotates to face you. 0 = instant.")]
+    [SerializeField] private float billboardLerpSpeed = 12f;
 
     [Header("Debug")]
     [Tooltip("CPU pipeline: log frame bytes, round-trip ms, hand/no-hand, HTTP ok/fail, and send FPS (see logEveryNSendAttempts for summaries).")]
@@ -190,6 +217,26 @@ public class SignInferenceClient : MonoBehaviour
     private int _candidateStableCount;
     private int _noHandFrames;
     private float _lastCommitAt = -999f;
+
+    // Captioning variables
+    private string _currentWordBuffer = "";
+    private List<string> _captionLines = new List<string> { "", "" };
+    private Queue<string> _sentenceHistory = new Queue<string>();
+    private readonly Dictionary<string, string> _localCorrectionCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _commonTypoMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        { "TEH", "THE" }, { "YUO", "YOU" }, { "YOUU", "YOU" }, { "THSI", "THIS" },
+        { "WROD", "WORD" }, { "SINGN", "SIGN" }, { "HELO", "HELLO" }, { "PLESE", "PLEASE" }
+    };
+    private static readonly string[] LocalCorrectionVocabulary =
+    {
+        "A","AN","AND","ARE","AS","AT","BE","BY","CAN","DO","FOR","FROM","GO","GOOD","HAVE","HELLO",
+        "HELP","HI","HOW","I","IN","IS","IT","ME","MY","NO","NOT","OF","OK","ON","PLEASE","SHE",
+        "SIGN","SORRY","SPEAK","STOP","THANK","THANKS","THAT","THE","THEY","THIS","TO","TURN",
+        "UP","USE","VERY","WE","WHAT","WHEN","WHERE","WHO","WHY","WITH","WORD","WORK","YOU","YOUR",
+        "ITALIAN","ENGLISH","CAPTION","CAPTIONS","TRANSLATION","LANGUAGE","HAND"
+    };
+    private List<GameObject> _hudObjects = new List<GameObject>();
     private Color32[] _lastRoiSample;
     private int _frameTickCounter;
 #pragma warning disable 0414 // Debug placeholders kept for planned telemetry expansion.
@@ -692,6 +739,8 @@ public class SignInferenceClient : MonoBehaviour
         {
             return;
         }
+
+        UpdateHudOrientation();
 
         if (Time.time < _nextRequestAt)
         {
@@ -1983,15 +2032,40 @@ public class SignInferenceClient : MonoBehaviour
             _pendingLetter = null;
             _candidateLetter = "";
             _candidateStableCount = 0;
-            if (_noHandFrames >= Mathf.Max(1, autoSpaceNoHandFrames)
-                && _historyText.Length > 0
-                && !_historyText.EndsWith(" ", StringComparison.Ordinal))
+
+            if (_noHandFrames == Mathf.Max(1, autoSpaceNoHandFrames))
             {
-                _historyText += " ";
+                if (_currentWordBuffer.Length > 0)
+                {
+                    string finalizedWord = CorrectWordLocal(_currentWordBuffer);
+                    AppendWordToCaption(finalizedWord);
+                    _historyText += " ";
+                    _currentWordBuffer = "";
+                }
+            }
+            else if (_noHandFrames == Mathf.Max(1, endSentenceNoHandFrames))
+            {
+                if (_historyText.Length > 0)
+                {
+                    _sentenceHistory.Enqueue(_historyText);
+                    while (_sentenceHistory.Count > Mathf.Max(1, maxCompletedSentences))
+                    {
+                        _sentenceHistory.Dequeue();
+                    }
+                    _historyText = "";
+                }
+                _captionLines[0] = "";
+                _captionLines[1] = "";
+            }
+            else if (_noHandFrames == Mathf.Max(1, autoClearNoHandFrames))
+            {
+                // Auto-clear or fade out
+                _captionLines[0] = "";
+                _captionLines[1] = "";
             }
 
             if (letterText != null)
-                letterText.text = "NO HAND";
+                letterText.text = noHandFriendlyMessage;
         }
         else
         {
@@ -2011,12 +2085,17 @@ public class SignInferenceClient : MonoBehaviour
                 if (_candidateStableCount >= requiredStableFrames
                     && Time.time - _lastCommitAt >= Mathf.Max(0.01f, commitCooldownSeconds))
                 {
+                    _currentWordBuffer += _candidateLetter;
                     _historyText += _candidateLetter;
+                    if (_historyText.Length > Mathf.Max(24, maxHistoryChars))
+                    {
+                        _historyText = _historyText.Substring(_historyText.Length - Mathf.Max(24, maxHistoryChars));
+                    }
                     _lastCommitAt = Time.time;
                 }
 
                 if (letterText != null)
-                    letterText.text = $"{normalizedLetter} ({Mathf.Clamp01(response.confidence):P0})";
+                    letterText.text = normalizedLetter;
             }
             else
             {
@@ -2024,15 +2103,18 @@ public class SignInferenceClient : MonoBehaviour
                 _candidateLetter = "";
                 _candidateStableCount = 0;
                 if (letterText != null)
-                    letterText.text = $"— (conf {Mathf.Clamp01(response.confidence):P0}, margin {Mathf.Max(0f, response.top2_margin):0.00})";
+                    letterText.text = "…";
             }
         }
+
+        string displayCaption = UpdateCaptionLinesFromBuffer();
 
         if (string.IsNullOrWhiteSpace(response.text))
             response.text = _historyText;
 
         _inferCaptionLine = FormatInferCaption(
             response,
+            displayCaption,
             _historyText,
             _candidateLetter,
             _candidateStableCount,
@@ -2052,6 +2134,83 @@ public class SignInferenceClient : MonoBehaviour
                 {
                     serverText.text = _lastServerText;
                 }
+            }
+        }
+    }
+
+    private void AppendWordToCaption(string word)
+    {
+        if (string.IsNullOrWhiteSpace(word)) return;
+        // Add word boundary space if line lacks one and is not empty
+        string lastLine = _captionLines[1];
+        if (lastLine.Length > 0 && !lastLine.EndsWith(" "))
+        {
+            lastLine += " ";
+        }
+
+        if (lastLine.Length + word.Length > maxCharsPerLine)
+        {
+            // Wrap to new line
+            _captionLines[0] = _captionLines[1];
+            _captionLines[1] = word;
+        }
+        else
+        {
+            _captionLines[1] = lastLine + word;
+        }
+    }
+
+    private string UpdateCaptionLinesFromBuffer()
+    {
+        string displayStr = _captionLines[0];
+        if (!string.IsNullOrEmpty(displayStr))
+        {
+            displayStr += "\n";
+        }
+        displayStr += _captionLines[1];
+
+        // Append grey preview text of the current uncommitted word
+        if (_currentWordBuffer.Length > 0)
+        {
+            if (displayStr.Length > 0 && !displayStr.EndsWith(" ") && !displayStr.EndsWith("\n"))
+            {
+                displayStr += " ";
+            }
+            displayStr += $"<color=#888888>{_currentWordBuffer}</color>";
+        }
+
+        // Output to main HUD caption
+        if (_mainHudCaptionLabel != null)
+        {
+            _mainHudCaptionLabel.text = displayStr;
+            _mainHudCaptionLabel.style.display = DisplayStyle.Flex;
+        }
+
+        return displayStr;
+    }
+
+    private void UpdateHudOrientation()
+    {
+        if (!useBillboardHud || _hudObjects == null || _hudObjects.Count == 0) 
+            return;
+        
+        Transform camTrans = Camera.main != null ? Camera.main.transform : null;
+        if (camTrans == null) return;
+
+        foreach (var go in _hudObjects)
+        {
+            if (go == null) continue;
+            
+            if (billboardLerpSpeed <= 0f)
+            {
+                go.transform.rotation = camTrans.rotation;
+            }
+            else
+            {
+                go.transform.rotation = Quaternion.Slerp(
+                    go.transform.rotation, 
+                    camTrans.rotation, 
+                    Time.deltaTime * billboardLerpSpeed);
             }
         }
     }
@@ -2513,8 +2672,9 @@ public class SignInferenceClient : MonoBehaviour
         return null;
     }
 
-    private static string FormatInferCaption(
+    private string FormatInferCaption(
         InferResponse r,
+        string displayCaption,
         string historyText,
         string candidateLetter,
         int candidateStableCount,
@@ -2529,26 +2689,20 @@ public class SignInferenceClient : MonoBehaviour
         var parts = new List<string>();
         if (noHand)
         {
-            parts.Add("NO HAND");
+            parts.Add(noHandFriendlyMessage);
         }
 
-        if (!string.IsNullOrEmpty(historyText))
+        if (!string.IsNullOrWhiteSpace(displayCaption))
         {
-            parts.Add("History: " + historyText.TrimEnd());
+            parts.Add(displayCaption.Trim());
+        }
+        else if (!string.IsNullOrEmpty(historyText))
+        {
+            parts.Add(historyText.TrimEnd());
         }
         else if (!string.IsNullOrEmpty(r.text))
         {
             parts.Add(r.text.Trim());
-        }
-
-        if (!noHand && !string.IsNullOrEmpty(r.letter) && !string.Equals(r.letter, "NONE", StringComparison.OrdinalIgnoreCase))
-        {
-            parts.Add($"{r.letter} ({Mathf.Clamp01(r.confidence):P0}, m:{Mathf.Max(0f, r.top2_margin):0.00})");
-        }
-
-        if (!string.IsNullOrEmpty(candidateLetter))
-        {
-            parts.Add($"Candidate {candidateLetter} {candidateStableCount}/{Mathf.Max(1, commitStableFrames)}");
         }
 
         if (!string.IsNullOrEmpty(r.detail))
@@ -2562,6 +2716,104 @@ public class SignInferenceClient : MonoBehaviour
         }
 
         return parts.Count > 0 ? string.Join(" · ", parts) : "";
+    }
+
+    private string CorrectWordLocal(string rawWord)
+    {
+        if (!enableLocalWordCorrection || string.IsNullOrWhiteSpace(rawWord))
+            return rawWord;
+
+        string normalized = NormalizeWordToken(rawWord);
+        if (string.IsNullOrEmpty(normalized))
+            return rawWord;
+
+        if (_commonTypoMap.TryGetValue(normalized, out string mapped))
+            return mapped;
+
+        if (_localCorrectionCache.TryGetValue(normalized, out string cached))
+            return cached;
+
+        int bestDistance = int.MaxValue;
+        string best = normalized;
+        int maxDist = Mathf.Clamp(localCorrectionMaxEditDistance, 1, 2);
+
+        for (int i = 0; i < LocalCorrectionVocabulary.Length; i++)
+        {
+            string candidate = LocalCorrectionVocabulary[i];
+            if (Mathf.Abs(candidate.Length - normalized.Length) > maxDist)
+                continue;
+
+            int d = BoundedLevenshteinDistance(normalized, candidate, maxDist);
+            if (d >= 0 && d < bestDistance)
+            {
+                bestDistance = d;
+                best = candidate;
+                if (d == 0) break;
+            }
+        }
+
+        string corrected = bestDistance <= maxDist ? best : normalized;
+        _localCorrectionCache[normalized] = corrected;
+        return corrected;
+    }
+
+    private static string NormalizeWordToken(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+        string up = input.Trim().ToUpperInvariant();
+        var sb = new StringBuilder(up.Length);
+        char prev = '\0';
+        int repeat = 0;
+        for (int i = 0; i < up.Length; i++)
+        {
+            char c = up[i];
+            bool keep = (c >= 'A' && c <= 'Z') || c == '\'';
+            if (!keep) continue;
+
+            if (c == prev)
+            {
+                repeat++;
+                if (repeat > 2) continue;
+            }
+            else
+            {
+                prev = c;
+                repeat = 1;
+            }
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    private static int BoundedLevenshteinDistance(string a, string b, int maxDistance)
+    {
+        int n = a.Length;
+        int m = b.Length;
+        if (Mathf.Abs(n - m) > maxDistance) return -1;
+        int[] prev = new int[m + 1];
+        int[] curr = new int[m + 1];
+        for (int j = 0; j <= m; j++) prev[j] = j;
+
+        for (int i = 1; i <= n; i++)
+        {
+            curr[0] = i;
+            int rowMin = curr[0];
+            for (int j = 1; j <= m; j++)
+            {
+                int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                int del = prev[j] + 1;
+                int ins = curr[j - 1] + 1;
+                int sub = prev[j - 1] + cost;
+                int val = del < ins ? del : ins;
+                if (sub < val) val = sub;
+                curr[j] = val;
+                if (val < rowMin) rowMin = val;
+            }
+            if (rowMin > maxDistance) return -1;
+            var tmp = prev; prev = curr; curr = tmp;
+        }
+
+        return prev[m] <= maxDistance ? prev[m] : -1;
     }
 
     private IEnumerator BindToolkitCaptionLabelsWhenReady()
@@ -2580,7 +2832,11 @@ public class SignInferenceClient : MonoBehaviour
                     if (sub != null)
                     {
                         _subtitleLabel = sub;
-                        Debug.Log("[SignInferenceClient] Bound subtitle-text for sign captions.");
+                        if (!_hudObjects.Contains(docs[i].gameObject))
+                        {
+                            _hudObjects.Add(docs[i].gameObject);
+                        }
+                        Debug.Log("[SignInferenceClient] Bound subtitle-text for sign captions (Billboarding enabled).");
                     }
                 }
 
@@ -2590,7 +2846,11 @@ public class SignInferenceClient : MonoBehaviour
                     if (mainCap != null)
                     {
                         _mainHudCaptionLabel = mainCap;
-                        Debug.Log("[SignInferenceClient] Bound sign-inference-caption on MainLayout.");
+                        if (!_hudObjects.Contains(docs[i].gameObject))
+                        {
+                            _hudObjects.Add(docs[i].gameObject);
+                        }
+                        Debug.Log("[SignInferenceClient] Bound sign-inference-caption on MainLayout (Billboarding enabled).");
                     }
                 }
             }

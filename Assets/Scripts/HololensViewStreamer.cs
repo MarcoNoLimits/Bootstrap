@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading;
@@ -14,6 +16,9 @@ public class HololensViewStreamer : MonoBehaviour
 {
     [Tooltip("Port for the viewer webpage (ensure it's not in use).")]
     [SerializeField] private int _port = 8080;
+
+    [Tooltip("Also bind LAN interfaces so other devices can open the stream URL. Requires URLACL/admin on Windows.")]
+    [SerializeField] private bool _allowLanAccess = false;
 
     [Tooltip("Stream width; height is derived from main camera aspect.")]
     [SerializeField] private int _streamWidth = 960;
@@ -246,22 +251,107 @@ public class HololensViewStreamer : MonoBehaviour
     private void StartServer()
     {
         if (_listener != null) return;
-        string prefix = "http://localhost:" + _port + "/";
-        _listener = new HttpListener();
-        _listener.Prefixes.Add(prefix);
+        // First attempt: configured mode. If that fails due to permissions, fallback to localhost-only.
+        if (TryStartServer(_allowLanAccess))
+            return;
+
+        if (_allowLanAccess && TryStartServer(false))
+        {
+            Debug.LogWarning(
+                "[HololensViewStreamer] LAN binding failed (likely URLACL/admin permission). " +
+                "Started in localhost-only mode instead.");
+            return;
+        }
+
+        Debug.LogError(
+            "[HololensViewStreamer] Could not start server on port " + _port +
+            ". If another app uses this port, change _port. For LAN mode on Windows, run once in admin terminal:\n" +
+            "netsh http add urlacl url=http://+:" + _port + "/ user=Everyone");
+    }
+
+    private bool TryStartServer(bool allowLan)
+    {
+        HttpListener listener = new HttpListener();
+        string[] prefixes = BuildPrefixes(allowLan);
+        foreach (string p in prefixes)
+        {
+            listener.Prefixes.Add(p);
+        }
+
         try
         {
-            _listener.Start();
+            listener.Start();
+            _listener = listener;
             _running = true;
             _serverThread = new Thread(ServerLoop);
             _serverThread.IsBackground = true;
             _serverThread.Start();
-            Debug.Log("[HololensViewStreamer] Viewer at: " + prefix);
+            string[] urls = BuildCandidateViewerUrls(allowLan);
+            Debug.Log("[HololensViewStreamer] Viewer URLs:\n - " + string.Join("\n - ", urls));
+            return true;
         }
         catch (Exception e)
         {
-            Debug.LogError("[HololensViewStreamer] Could not start server on port " + _port + ": " + e.Message);
+            try
+            {
+                listener.Close();
+            }
+            catch
+            {
+                // ignore cleanup failure
+            }
+            Debug.LogWarning("[HololensViewStreamer] Start failed (" + string.Join(", ", prefixes) + "): " + e.Message);
+            return false;
         }
+    }
+
+    private string[] BuildPrefixes(bool allowLan)
+    {
+        var prefixes = new List<string>
+        {
+            "http://localhost:" + _port + "/",
+            "http://127.0.0.1:" + _port + "/"
+        };
+
+        if (allowLan)
+        {
+            // + binds all interfaces so phones/laptops on same LAN can access.
+            prefixes.Add("http://+:" + _port + "/");
+        }
+
+        return prefixes.Distinct().ToArray();
+    }
+
+    private string[] BuildCandidateViewerUrls(bool allowLan)
+    {
+        var urls = new List<string>
+        {
+            "http://localhost:" + _port + "/",
+            "http://127.0.0.1:" + _port + "/"
+        };
+
+        if (!allowLan)
+            return urls.Distinct().ToArray();
+
+        try
+        {
+            string host = Dns.GetHostName();
+            IPAddress[] addresses = Dns.GetHostAddresses(host);
+            foreach (IPAddress ip in addresses)
+            {
+                if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                    continue;
+                if (IPAddress.IsLoopback(ip))
+                    continue;
+                urls.Add("http://" + ip + ":" + _port + "/");
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[HololensViewStreamer] Failed to enumerate LAN IPs: " + ex.Message);
+        }
+
+        return urls.Distinct().ToArray();
     }
 
     private void ServerLoop()

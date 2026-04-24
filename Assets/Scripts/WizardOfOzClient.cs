@@ -50,27 +50,27 @@ public class WizardOfOzClient : MonoBehaviour
     [SerializeField] private bool allowApiSilenceAutoFallback = false;
     [Header("ASR Runtime Tuning")]
     [Tooltip("English API tuning: chunk length in seconds.")]
-    [SerializeField] private float englishAsrChunkSeconds = 0.85f;
+    [SerializeField] private float englishAsrChunkSeconds = 1.8f;
     [Tooltip("English API tuning: max send window in seconds.")]
-    [SerializeField] private float englishAsrSendWindowSeconds = 2.6f;
+    [SerializeField] private float englishAsrSendWindowSeconds = 2.2f;
     [Tooltip("English API tuning: skip sending chunks quieter than this RMS.")]
-    [SerializeField] private float englishAsrMinChunkRms = 0.0018f;
+    [SerializeField] private float englishAsrMinChunkRms = 0.0065f;
     [Tooltip("English API tuning: adaptive gain target RMS.")]
-    [SerializeField] private float englishAsrAdaptiveGainTargetRms = 0.055f;
+    [SerializeField] private float englishAsrAdaptiveGainTargetRms = 0.038f;
     [Tooltip("English API tuning: adaptive gain cap.")]
-    [SerializeField] private float englishAsrAdaptiveGainMax = 14f;
+    [SerializeField] private float englishAsrAdaptiveGainMax = 8f;
     [Tooltip("English mode: start with on-device dictation, and switch to API only if local dictation errors.")]
     [SerializeField] private bool preferLocalEnglishAsrWithApiFallback = false;
     [Tooltip("Italian API tuning: slightly longer chunk reduces empty-string responses on softer speech.")]
-    [SerializeField] private float italianAsrChunkSeconds = 1.05f;
+    [SerializeField] private float italianAsrChunkSeconds = 1.8f;
     [Tooltip("Italian API tuning: window length in seconds.")]
-    [SerializeField] private float italianAsrSendWindowSeconds = 3.2f;
+    [SerializeField] private float italianAsrSendWindowSeconds = 2.2f;
     [Tooltip("Italian API tuning: lower silence gate to avoid dropping soft speech.")]
-    [SerializeField] private float italianAsrMinChunkRms = 0.0025f;
+    [SerializeField] private float italianAsrMinChunkRms = 0.0065f;
     [Tooltip("Italian API tuning: higher target RMS for clearer backend input.")]
-    [SerializeField] private float italianAsrAdaptiveGainTargetRms = 0.065f;
+    [SerializeField] private float italianAsrAdaptiveGainTargetRms = 0.040f;
     [Tooltip("Italian API tuning: adaptive gain cap.")]
-    [SerializeField] private float italianAsrAdaptiveGainMax = 18f;
+    [SerializeField] private float italianAsrAdaptiveGainMax = 8f;
 
     // UI Master Components (from legacy App.cs)
     private GameObject _mainUIRoot;
@@ -99,8 +99,8 @@ public class WizardOfOzClient : MonoBehaviour
     [SerializeField] private int subtitleRenderTextureHeight = 520;
     [SerializeField] private float subtitlePanelWidthMeters = 1.12f;
     [SerializeField] private float subtitlePanelHeightMeters = 0.5f;
-    [SerializeField] private float subtitleDistanceMeters = 1.2f;
-    [SerializeField] private float subtitleVerticalOffsetMeters = -0.28f;
+    [SerializeField] private float subtitleDistanceMeters = 1.35f;
+    [SerializeField] private float subtitleVerticalOffsetMeters = -0.30f;
     [SerializeField] private bool autoResizeSubtitlePanel = false;
     [SerializeField] private float subtitleAutoHeightPerLineMeters = 0.06f;
     [SerializeField] private float subtitlePanelMinHeightMeters = 0.28f;
@@ -259,7 +259,16 @@ public class WizardOfOzClient : MonoBehaviour
         Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * Mathf.Clamp(subtitleDistanceMeters, 0.6f, 2.5f));
         target += _mainCam.transform.up * Mathf.Clamp(subtitleVerticalOffsetMeters, -0.6f, 0.6f);
         _mainUIRoot.transform.position = target;
-        // One-time orientation only (no continuous rotation afterwards).
+        FaceSubtitleLikeSidebar();
+    }
+
+    private void FaceSubtitleLikeSidebar()
+    {
+        if (_mainUIRoot == null || _mainCam == null)
+        {
+            return;
+        }
+
         _mainUIRoot.transform.LookAt(_mainCam.transform.position, Vector3.up);
         _mainUIRoot.transform.Rotate(0f, 180f, 0f);
     }
@@ -323,7 +332,12 @@ public class WizardOfOzClient : MonoBehaviour
                 if (App.CurrentInputMode != App.InputMode.Asr) return;
                 _listeningStallDeadline = -1f;
                 _nextStallMessageAllowedTime = 0f;
-                _uiManager.UpdateText($"Recognized: {text}");
+                if (_italianAsrModeEnabled || App.IsTranslationEnabled)
+                {
+                    return;
+                }
+
+                _uiManager.UpdateText(text);
             });
             if (App.CurrentInputMode != App.InputMode.Asr)
                 return;
@@ -373,18 +387,18 @@ public class WizardOfOzClient : MonoBehaviour
     private string ResolveEffectiveAsrApiUrl()
     {
         if (!_italianAsrModeEnabled)
-            return NormalizeAsrAudioPostUrl(asrApiUrl != null ? asrApiUrl.Trim() : "", false);
+            return NormalizeAsrAudioPostUrl(asrApiUrl != null ? asrApiUrl.Trim() : "");
 
         string it = italianAsrApiUrl != null ? italianAsrApiUrl.Trim() : "";
         if (!string.IsNullOrEmpty(it))
-            return NormalizeAsrAudioPostUrl(it, true);
+            return NormalizeAsrAudioPostUrl(it);
 
         Debug.LogWarning(
             "[WizardOfOz] Italian ASR URL is empty — set Wizard Italian ASR URL to your POST /audio proxy (same float32 + X-Sample-Rate contract). Using English ASR URL until configured.");
-        return NormalizeAsrAudioPostUrl(asrApiUrl != null ? asrApiUrl.Trim() : "", false);
+        return NormalizeAsrAudioPostUrl(asrApiUrl != null ? asrApiUrl.Trim() : "");
     }
 
-    private static string NormalizeAsrAudioPostUrl(string raw, bool italianMode)
+    private static string NormalizeAsrAudioPostUrl(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
@@ -397,48 +411,18 @@ public class WizardOfOzClient : MonoBehaviour
             return u;
         }
 
-        string host = uri.Host != null ? uri.Host.ToLowerInvariant() : "";
         string path = (uri.AbsolutePath ?? "").Trim();
         bool hasAudioPath = path.EndsWith("/audio", StringComparison.OrdinalIgnoreCase);
         bool hasTranscribePath = path.EndsWith("/transcribe", StringComparison.OrdinalIgnoreCase);
-        bool hasGradioTranscribePath = path.EndsWith("/gradio_api/call/transcribe", StringComparison.OrdinalIgnoreCase);
-        bool isItalianGradioSpace = host.Contains("thedeezat-italian-speech-to-text.hf.space");
-
-        if (italianMode && isItalianGradioSpace)
-        {
-            if (!hasAudioPath && !hasGradioTranscribePath)
-            {
-                Debug.Log(
-                    "[WizardOfOz] Italian HF Space detected. Using Gradio endpoint /gradio_api/call/transcribe for ITA ASR.");
-            }
-        }
-
-        if (italianMode && isItalianGradioSpace && !hasAudioPath && !hasGradioTranscribePath)
-        {
-            if (hasTranscribePath)
-            {
-                string basePart = u.Substring(0, u.Length - "/transcribe".Length).TrimEnd('/');
-                return basePart + "/gradio_api/call/transcribe";
-            }
-
-            return u.TrimEnd('/') + "/gradio_api/call/transcribe";
-        }
-
-        if (hasTranscribePath)
-        {
-            if (italianMode)
-            {
-                string basePart = u.Substring(0, u.Length - "/transcribe".Length);
-                return basePart.TrimEnd('/') + "/gradio_api/call/transcribe";
-            }
-
-            // English/default client contract in this app is float32 body + X-Sample-Rate to /audio.
-            string basePartEn = u.Substring(0, u.Length - "/transcribe".Length);
-            return basePartEn.TrimEnd('/') + "/audio";
-        }
 
         if (!hasAudioPath)
         {
+            if (hasTranscribePath)
+            {
+                string basePart = u.Substring(0, u.Length - "/transcribe".Length);
+                return basePart.TrimEnd('/') + "/audio";
+            }
+
             if (path == "/" || string.IsNullOrEmpty(path))
             {
                 return u.TrimEnd('/') + "/audio";
@@ -461,6 +445,7 @@ public class WizardOfOzClient : MonoBehaviour
 
         EnsureAsrManager();
         ApplyAsrRuntimeTuningForCurrentMode();
+        HololensAsrManager.Instance.SetForcedLanguage(_italianAsrModeEnabled ? "italian" : "english");
 
         _voice = new HybridVoiceManager(
             this,
@@ -646,6 +631,7 @@ public class WizardOfOzClient : MonoBehaviour
             Vector3 target = _mainCam.transform.position + (_mainCam.transform.forward * Mathf.Clamp(subtitleDistanceMeters, 0.6f, 2.5f));
             target += _mainCam.transform.up * Mathf.Clamp(subtitleVerticalOffsetMeters, -0.6f, 0.6f);
             _mainUIRoot.transform.position = Vector3.Lerp(_mainUIRoot.transform.position, target, Time.deltaTime * 6.0f);
+            FaceSubtitleLikeSidebar();
         }
 
         if (_uiManager != null)

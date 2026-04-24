@@ -33,11 +33,11 @@ public class HololensAsrManager : MonoBehaviour
     [SerializeField] private bool _writeAsrDebugFile = false;
     [SerializeField] private int _sampleRate = 16000;
     [Tooltip("Minimum seconds of new audio before each POST. Lower values improve realtime response.")]
-    [SerializeField] private float _chunkSeconds = 0.85f;
+    [SerializeField] private float _chunkSeconds = 1.8f;
     [Tooltip("Sliding window length uploaded each request. Smaller windows reduce repeated transcripts.")]
-    [SerializeField] private float _sendWindowSeconds = 2.6f;
+    [SerializeField] private float _sendWindowSeconds = 2.2f;
     [Tooltip("Skip POST when chunk RMS is below this threshold (client-side silence guard).")]
-    [SerializeField] private float _minChunkRmsToSend = 0.0045f;
+    [SerializeField] private float _minChunkRmsToSend = 0.0065f;
     [SerializeField] private int _clipLengthSeconds = 30;
     [Header("Microphone selection")]
     [Tooltip("If set, prefer a microphone whose device name contains this text (case-insensitive).")]
@@ -46,11 +46,13 @@ public class HololensAsrManager : MonoBehaviour
     [SerializeField] private int _emptyHttp200StreakBeforeFallback = 10;
     [Header("Input level (matches HF Space preprocess: quiet audio is dropped server-side)")]
     [Tooltip("Boost quiet microphone PCM so RMS passes the Space ASR_MIN_RMS gate (~0.007 after server high-pass). Disable only for debugging.")]
-    [SerializeField] private bool _adaptiveInputGain = true;
-    [SerializeField] private float _adaptiveGainTargetRms = 0.055f;
-    [SerializeField] private float _adaptiveGainMax = 14f;
+    [SerializeField] private bool _adaptiveInputGain = false;
+    [SerializeField] private float _adaptiveGainTargetRms = 0.038f;
+    [SerializeField] private float _adaptiveGainMax = 8f;
     [Tooltip("HF cold start / long clips; UnityWebRequest uses seconds.")]
     [SerializeField] private int _requestTimeoutSeconds = 120;
+    [Tooltip("Optional language hint for /audio API: english, italian, or auto/empty.")]
+    [SerializeField] private string _forcedLanguage = "";
     private bool _warnedNonAudioEndpoint;
 
     /// <summary>Last <c>text_en</c> / <c>english</c> from Italian pipeline JSON, if present.</summary>
@@ -156,6 +158,15 @@ public class HololensAsrManager : MonoBehaviour
         {
             _asrApiUrl = url.Trim();
             _warnedNonAudioEndpoint = false;
+        }
+    }
+
+    public void SetForcedLanguage(string forcedLanguage)
+    {
+        _forcedLanguage = (forcedLanguage ?? string.Empty).Trim().ToLowerInvariant();
+        if (_forcedLanguage == "auto")
+        {
+            _forcedLanguage = string.Empty;
         }
     }
 
@@ -584,6 +595,10 @@ public class HololensAsrManager : MonoBehaviour
                 req.downloadHandler = new DownloadHandlerBuffer();
                 req.SetRequestHeader("Content-Type", "application/octet-stream");
                 req.SetRequestHeader("X-Sample-Rate", _sampleRate.ToString());
+                if (!string.IsNullOrWhiteSpace(_forcedLanguage))
+                {
+                    req.SetRequestHeader("X-Forced-Language", _forcedLanguage);
+                }
                 req.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
                 req.timeout = Mathf.Clamp(_requestTimeoutSeconds, 30, 600);
                 yield return req.SendWebRequest();
@@ -1163,9 +1178,7 @@ public class HololensAsrManager : MonoBehaviour
     private static string CleanHallucinatedPrefix(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return string.Empty;
-        string t = text.Trim();
-        t = Regex.Replace(t, "^(thank you[\\s,!.?:-]*)+", "", RegexOptions.IgnoreCase);
-        return t.Trim();
+        return text.Trim();
     }
 
     private static string RemoveImmediateRepeatedWords(string text)
@@ -1190,8 +1203,6 @@ public class HololensAsrManager : MonoBehaviour
         if (string.IsNullOrWhiteSpace(next)) return true;
         string n = next.Trim().ToLowerInvariant();
         if (n.Length < 2) return true;
-        if (n == "thank you" || n == "thanks for watching" || n.StartsWith("subtitle") || n.StartsWith("captions"))
-            return true;
         int words = Regex.Matches(n, "\\b\\w+\\b").Count;
         if (words >= 5)
         {

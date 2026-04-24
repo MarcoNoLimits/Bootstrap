@@ -21,6 +21,15 @@ public static class WorldUiQuadMaterial
             shader = Shader.Find("Unlit/Transparent");
         if (shader == null)
             shader = Shader.Find("Unlit/Texture");
+        if (shader == null)
+            shader = Shader.Find("Sprites/Default");
+        if (shader == null)
+        {
+            Debug.LogError(
+                "[WorldUiQuadMaterial] No suitable shader found (Bootstrap/WorldUIUnlit, Unlit/Transparent, Unlit/Texture, Sprites/Default). " +
+                "Keeping primitive default material as fallback.");
+            return null;
+        }
 
         var fallback = new Material(shader);
         fallback.mainTexture = texture;
