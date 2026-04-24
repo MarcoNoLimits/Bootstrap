@@ -61,6 +61,8 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
     [SerializeField, Range(0.01f, 1f)] private float roiSmoothing = 0.35f;
     [Tooltip("Minimum number of projected joints required to build ROI. Allows tolerance when one or two joints fail projection.")]
     [SerializeField, Range(3, 6)] private int minProjectedJoints = 4;
+    [Tooltip("How many consecutive frames we keep the last valid ROI when right-hand tracking briefly drops.")]
+    [SerializeField, Range(0, 15)] private int holdLastValidRoiFrames = 4;
 
     private XRHandSubsystem _handSubsystem;
 
@@ -74,6 +76,7 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
     public string LastInvalidReason { get; private set; } = "";
     private Rect _smoothedRoi;
     private bool _hasSmoothedRoi;
+    private int _roiHoldFramesRemaining;
 
     private void Awake()
     {
@@ -146,6 +149,14 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
         {
             handTracked = false;
             LastInvalidReason = "hand_not_tracked";
+            if (_roiHoldFramesRemaining > 0 && LastHadValidRoi)
+            {
+                _roiHoldFramesRemaining--;
+                roi = LastRoi;
+                LastRoiValid = true;
+                LastInvalidReason = "hand_not_tracked_holding_last_roi";
+                return true;
+            }
             return false;
         }
 
@@ -158,14 +169,12 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
             XRHandJoint joint = hand.GetJoint(s_RoiJoints[i]);
             if (!IsJointUsable(joint))
             {
-                LastInvalidReason = "joint_not_usable";
-                return false;
+                continue;
             }
 
             if (!joint.TryGetPose(out Pose localPose))
             {
-                LastInvalidReason = "joint_pose_missing";
-                return false;
+                continue;
             }
 
             Vector3 world = JointPositionToWorld(localPose, origin);
@@ -195,7 +204,16 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
         if (projectedCount < Mathf.Clamp(minProjectedJoints, 3, s_RoiJoints.Length))
         {
             string subReason = locatableCamera.LastProjectionFailReason;
-            LastInvalidReason = "projection_failed:" + (string.IsNullOrEmpty(subReason) ? "unknown" : subReason);
+            LastInvalidReason = "projection_failed_or_too_few_joints(" + projectedCount + "):" +
+                (string.IsNullOrEmpty(subReason) ? "unknown" : subReason);
+            if (_roiHoldFramesRemaining > 0 && LastHadValidRoi)
+            {
+                _roiHoldFramesRemaining--;
+                roi = LastRoi;
+                LastRoiValid = true;
+                LastInvalidReason = "projection_hold_last_roi";
+                return true;
+            }
             _hasSmoothedRoi = false;
             return false;
         }
@@ -243,6 +261,7 @@ public class SignLanguageHandRoiPipeline : MonoBehaviour
         LastRoi = roi;
         LastHadValidRoi = true;
         LastRoiValid = true;
+        _roiHoldFramesRemaining = Mathf.Max(0, holdLastValidRoiFrames);
         return true;
     }
 

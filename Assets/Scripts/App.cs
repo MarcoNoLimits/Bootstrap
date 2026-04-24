@@ -15,9 +15,9 @@ public class App : MonoBehaviour
     [SerializeField] private float _distance = 1.1f;
     [SerializeField] private float _smoothSpeed = 4f;
     [Tooltip("Positive = right side of the view (camera +X).")]
-    [SerializeField] private float _rightOffsetMeters = 0.08f;
+    [SerializeField] private float _rightOffsetMeters = 0.12f;
     [Tooltip("Optional vertical nudge (camera +Y). Higher moves the panel up.")]
-    [SerializeField] private float _verticalOffsetMeters = -0.04f;
+    [SerializeField] private float _verticalOffsetMeters = 0.02f;
     [Header("Scene Background")]
     [SerializeField] private Color _sceneBackgroundColor = new Color(0f, 0f, 0f, 0f);
 
@@ -401,6 +401,8 @@ public class App : MonoBehaviour
                 IsTranslationEnabled = _audioOn && _translationOn;
                 _translationToggleBtn.text = _translationOn ? "Translation · On" : "Translation · Off";
                 _translationToggleBtn.EnableInClassList("action-rail-btn-on", _translationOn);
+                // Translation toggle must never stop ASR capture.
+                SetAsrCaptureActive(_audioOn || _italianAsrOn);
             };
         }
 

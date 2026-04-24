@@ -99,8 +99,8 @@ public class WizardOfOzClient : MonoBehaviour
     [SerializeField] private int subtitleRenderTextureHeight = 520;
     [SerializeField] private float subtitlePanelWidthMeters = 1.12f;
     [SerializeField] private float subtitlePanelHeightMeters = 0.5f;
-    [SerializeField] private float subtitleDistanceMeters = 1.35f;
-    [SerializeField] private float subtitleVerticalOffsetMeters = -0.30f;
+    [SerializeField] private float subtitleDistanceMeters = 1.55f;
+    [SerializeField] private float subtitleVerticalOffsetMeters = -0.45f;
     [SerializeField] private bool autoResizeSubtitlePanel = false;
     [SerializeField] private float subtitleAutoHeightPerLineMeters = 0.06f;
     [SerializeField] private float subtitlePanelMinHeightMeters = 0.28f;
