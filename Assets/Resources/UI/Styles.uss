@@ -402,7 +402,6 @@
     justify-content: flex-start;
     align-items: stretch;
     align-self: stretch;
-    gap: 10px;
     padding-top: 0;
     padding-bottom: 12px;
     padding-left: 12px;
@@ -416,7 +415,7 @@
     width: 100%;
     min-width: 220px;
     min-height: 52px;
-    margin-bottom: 0;
+    margin-bottom: 10px;
     margin-top: 0;
     padding-top: 8px;
     padding-bottom: 8px;
@@ -442,11 +441,11 @@
 }
 
 .action-rail-btn-translation {
-    background-color: rgba(205, 36, 49, 1);
+    background-color: rgba(156, 46, 56, 0.96);
 }
 
 .action-rail-btn-ita {
-    background-color: rgba(72, 38, 126, 0.96);
+    background-color: rgba(108, 94, 158, 0.99);
 }
 
 .action-rail-btn:hover {
@@ -454,7 +453,7 @@
 }
 
 .action-rail-btn-ita:hover {
-    background-color: rgba(90, 50, 150, 0.98);
+    background-color: rgba(122, 107, 173, 0.99);
 }
 
 .action-rail-btn:active {
@@ -466,11 +465,15 @@
 }
 
 .action-rail-btn-translation:active {
-    background-color: rgba(176, 22, 35, 1);
+    background-color: rgba(132, 37, 47, 1);
+}
+
+.action-rail-btn-translation:hover {
+    background-color: rgba(171, 60, 71, 0.98);
 }
 
 .action-rail-btn-ita:active {
-    background-color: rgba(58, 29, 104, 1);
+    background-color: rgba(94, 81, 141, 1);
 }
 
 .action-rail-btn-settings {
@@ -493,6 +496,22 @@
     margin-bottom: 0;
 }
 
+.action-rail-instruction {
+    width: 100%;
+    margin-bottom: 8px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+    padding-left: 8px;
+    padding-right: 8px;
+    border-radius: 8px;
+    background-color: rgba(0, 0, 0, 0.78);
+    color: rgba(245, 245, 245, 0.98);
+    font-size: 12px;
+    white-space: normal;
+    -unity-text-align: upper-center;
+    display: none;
+}
+
 /* Audio “on” state after pinch (class toggled from App.cs) — subtle off-white outline */
 .action-rail-btn-on {
     background-color: rgba(40, 160, 90, 0.92);
@@ -508,12 +527,16 @@
     background-color: rgba(24, 165, 78, 1);
 }
 
+.action-rail-btn-sign:hover {
+    background-color: rgba(35, 176, 89, 1);
+}
+
 .action-rail-btn-translation.action-rail-btn-on {
-    background-color: rgba(225, 48, 62, 1);
+    background-color: rgba(176, 59, 70, 0.98);
 }
 
 .action-rail-btn-ita.action-rail-btn-on {
-    background-color: rgba(132, 74, 212, 1);
+    background-color: rgba(118, 103, 170, 1);
 }
 
 .action-rail-btn-on:hover {
@@ -530,11 +553,11 @@
 }
 
 .action-rail-btn-translation.action-rail-btn-on:hover {
-    background-color: rgba(230, 70, 84, 0.96);
+    background-color: rgba(188, 74, 85, 0.98);
 }
 
 .action-rail-btn-ita.action-rail-btn-on:hover {
-    background-color: rgba(122, 77, 196, 0.99);
+    background-color: rgba(133, 117, 185, 0.99);
 }
 
 /* Brief pinch feedback for SLR / Settings */
@@ -550,6 +573,26 @@
     min-height: 0;
     flex-shrink: 0;
     -unity-text-align: upper-center;
+}
+
+.asr-instruction-label {
+    position: absolute;
+    top: 10px;
+    left: 0;
+    right: 0;
+    margin-left: 14px;
+    margin-right: 14px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+    padding-left: 10px;
+    padding-right: 10px;
+    border-radius: 10px;
+    background-color: rgba(0, 0, 0, 0.82);
+    color: rgba(245, 245, 245, 0.98);
+    font-size: 20px;
+    -unity-text-align: upper-center;
+    white-space: normal;
+    display: none;
 }
 
 .sign-inference-caption {

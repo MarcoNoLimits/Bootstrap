@@ -8,6 +8,7 @@ public class App : MonoBehaviour
     public enum InputMode { None, Asr, Sign }
     public static InputMode CurrentInputMode { get; private set; } = InputMode.None;
     public static bool IsTranslationEnabled { get; private set; }
+    public static bool IsItalianTranslationEnabled { get; private set; }
     private GameObject _mainUI;
     private Camera _mainCam;
     
@@ -17,7 +18,7 @@ public class App : MonoBehaviour
     [Tooltip("Positive = right side of the view (camera +X).")]
     [SerializeField] private float _rightOffsetMeters = 0.12f;
     [Tooltip("Optional vertical nudge (camera +Y). Higher moves the panel up.")]
-    [SerializeField] private float _verticalOffsetMeters = 0.02f;
+    [SerializeField] private float _verticalOffsetMeters = -0.06f;
     [Header("Scene Background")]
     [SerializeField] private Color _sceneBackgroundColor = new Color(0f, 0f, 0f, 0f);
 
@@ -28,11 +29,15 @@ public class App : MonoBehaviour
 
     private bool _audioOn;
     private bool _translationOn;
+    private bool _italianTranslationOn;
     private bool _signOn;
     private Button _translationToggleBtn;
+    private Button _itaTranslationToggleBtn;
     private Button _asrToggleBtn;
     private Button _signToggleBtn;
     private Button _itaToggleBtn;
+    private Label _asrTopInstructionLabel;
+    private Coroutine _asrTopInstructionCo;
     private bool _italianAsrOn;
     private float _nextSignCaptureEnsureAt;
     private UIDocument _uiDocInstance;
@@ -42,6 +47,9 @@ public class App : MonoBehaviour
     private bool _uiRebuildAttempted;
     private float _nextFacingLogAt;
     private float _uiInitTime;
+    [Header("ASR Instruction")]
+    [SerializeField] private string _asrTopInstructionText = "Tip: A longer pause means end of sentence.";
+    [SerializeField] private float _asrTopInstructionVisibleSeconds = 150f;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void AutoStart()
@@ -261,6 +269,13 @@ public class App : MonoBehaviour
 
         // 9. Root UI + debug strip (ignore picks so hits go to buttons)
         var root = uiDoc.rootVisualElement;
+        _asrTopInstructionLabel = root.Q<Label>("asr-top-instruction");
+        if (_asrTopInstructionLabel != null)
+        {
+            _asrTopInstructionLabel.text = "";
+            _asrTopInstructionLabel.style.display = DisplayStyle.None;
+            _asrTopInstructionLabel.pickingMode = PickingMode.Ignore;
+        }
 
         // 10. Pinch / click feedback (placeholder until wired to real audio / SLR / settings)
         var btnAudio = root.Q<Button>("btn-audio-toggle");
@@ -291,12 +306,23 @@ public class App : MonoBehaviour
                 {
                     wizard?.ClearSubtitleCaption();
                     _translationOn = true;
+                    IsTranslationEnabled = true;
+                    _italianTranslationOn = false;
+                    IsItalianTranslationEnabled = false;
                 }
 
                 CurrentInputMode = (_audioOn || _italianAsrOn) ? InputMode.Asr : (_signOn ? InputMode.Sign : InputMode.None);
                 IsTranslationEnabled = _audioOn && _translationOn;
                 HololensAsrManager.Instance?.SetForcedLanguage(_audioOn ? "english" : (_italianAsrOn ? "italian" : ""));
                 SetAsrCaptureActive(_audioOn || _italianAsrOn);
+                if (_audioOn)
+                {
+                    ShowAsrInstructionTemporarily();
+                }
+                else if (!_italianAsrOn)
+                {
+                    HideAsrInstruction();
+                }
 
                 var signClient = FindObjectOfType<SignInferenceClient>();
                 if (_audioOn && signClient != null)
@@ -321,16 +347,25 @@ public class App : MonoBehaviour
                     _translationToggleBtn.style.display = _audioOn ? DisplayStyle.Flex : DisplayStyle.None;
                     if (_audioOn)
                     {
-                        _translationToggleBtn.text = _translationOn ? "Translation · On" : "Translation · Off";
+                        _translationToggleBtn.text = _translationOn ? "Italian Translation · On" : "Italian Translation · Off";
                         _translationToggleBtn.EnableInClassList("action-rail-btn-on", _translationOn);
                     }
                     if (!_audioOn)
                     {
                         _translationOn = false;
                         IsTranslationEnabled = false;
-                        _translationToggleBtn.text = "Translation · Off";
+                        _translationToggleBtn.text = "Italian Translation · Off";
                         _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
+                }
+
+                if (_itaTranslationToggleBtn != null)
+                {
+                    _itaTranslationToggleBtn.style.display = DisplayStyle.None;
+                    _italianTranslationOn = false;
+                    IsItalianTranslationEnabled = false;
+                    _itaTranslationToggleBtn.text = "English Translation · Off";
+                    _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", false);
                 }
 
             };
@@ -350,8 +385,14 @@ public class App : MonoBehaviour
                 {
                     WizardOfOzClient.Instance?.ClearSubtitleCaption();
                 }
+                else
+                {
+                    // When exiting sign mode, clear lingering sign caption immediately.
+                    WizardOfOzClient.Instance?.ClearSubtitleCaption();
+                }
                 CurrentInputMode = _signOn ? InputMode.Sign : ((_audioOn || _italianAsrOn) ? InputMode.Asr : InputMode.None);
                 if (_signOn) IsTranslationEnabled = false;
+                if (_signOn) IsItalianTranslationEnabled = false;
 
                 if (_signOn && (_audioOn || _italianAsrOn))
                 {
@@ -374,9 +415,17 @@ public class App : MonoBehaviour
                     {
                         _translationOn = false;
                         IsTranslationEnabled = false;
-                        _translationToggleBtn.text = "Translation · Off";
+                        _translationToggleBtn.text = "Italian Translation · Off";
                         _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
                         _translationToggleBtn.style.display = DisplayStyle.None;
+                    }
+                    if (_itaTranslationToggleBtn != null)
+                    {
+                        _italianTranslationOn = false;
+                        IsItalianTranslationEnabled = false;
+                        _itaTranslationToggleBtn.text = "English Translation · Off";
+                        _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                        _itaTranslationToggleBtn.style.display = DisplayStyle.None;
                     }
 
                     SetAsrCaptureActive(false);
@@ -399,8 +448,24 @@ public class App : MonoBehaviour
                 if (!_audioOn) return;
                 _translationOn = !_translationOn;
                 IsTranslationEnabled = _audioOn && _translationOn;
-                _translationToggleBtn.text = _translationOn ? "Translation · On" : "Translation · Off";
+                _translationToggleBtn.text = _translationOn ? "Italian Translation · On" : "Italian Translation · Off";
                 _translationToggleBtn.EnableInClassList("action-rail-btn-on", _translationOn);
+                // Translation toggle must never stop ASR capture.
+                SetAsrCaptureActive(_audioOn || _italianAsrOn);
+            };
+        }
+
+        _itaTranslationToggleBtn = root.Q<Button>("btn-ita-translation-toggle");
+        if (_itaTranslationToggleBtn != null)
+        {
+            _itaTranslationToggleBtn.style.display = DisplayStyle.None;
+            _itaTranslationToggleBtn.clicked += () =>
+            {
+                if (!_italianAsrOn) return;
+                _italianTranslationOn = !_italianTranslationOn;
+                IsItalianTranslationEnabled = _italianAsrOn && _italianTranslationOn;
+                _itaTranslationToggleBtn.text = _italianTranslationOn ? "English Translation · On" : "English Translation · Off";
+                _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", _italianTranslationOn);
                 // Translation toggle must never stop ASR capture.
                 SetAsrCaptureActive(_audioOn || _italianAsrOn);
             };
@@ -424,6 +489,11 @@ public class App : MonoBehaviour
                 _italianAsrOn = wizard.IsItalianLocalAsrEnabled;
                 _itaToggleBtn.text = _italianAsrOn ? "Italian Captions · On" : "Switch to Italian Captions";
                 _itaToggleBtn.EnableInClassList("action-rail-btn-on", _italianAsrOn);
+                if (_italianAsrOn)
+                {
+                    _italianTranslationOn = true;
+                    IsItalianTranslationEnabled = true;
+                }
 
                 if (_italianAsrOn && _signOn)
                 {
@@ -450,8 +520,25 @@ public class App : MonoBehaviour
                     {
                         _translationOn = false;
                         _translationToggleBtn.style.display = DisplayStyle.None;
-                        _translationToggleBtn.text = "Translation · Off";
+                        _translationToggleBtn.text = "Italian Translation · Off";
                         _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                    }
+                }
+
+                if (_itaTranslationToggleBtn != null)
+                {
+                    _itaTranslationToggleBtn.style.display = _italianAsrOn ? DisplayStyle.Flex : DisplayStyle.None;
+                    if (_italianAsrOn)
+                    {
+                        _itaTranslationToggleBtn.text = _italianTranslationOn ? "English Translation · On" : "English Translation · Off";
+                        _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", _italianTranslationOn);
+                    }
+                    if (!_italianAsrOn)
+                    {
+                        _italianTranslationOn = false;
+                        IsItalianTranslationEnabled = false;
+                        _itaTranslationToggleBtn.text = "English Translation · Off";
+                        _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
                 }
 
@@ -461,6 +548,14 @@ public class App : MonoBehaviour
                 IsTranslationEnabled = _audioOn && _translationOn;
                 HololensAsrManager.Instance?.SetForcedLanguage(_italianAsrOn ? "italian" : (_audioOn ? "english" : ""));
                 SetAsrCaptureActive(_italianAsrOn || _audioOn);
+                if (_italianAsrOn)
+                {
+                    ShowAsrInstructionTemporarily();
+                }
+                else if (!_audioOn)
+                {
+                    HideAsrInstruction();
+                }
             };
         }
 
@@ -482,6 +577,7 @@ public class App : MonoBehaviour
     {
         if (_instance == this) _instance = null;
         WizardOfOzClient.OnItalianLocalAsrStateChanged -= SyncItalianToggleFromWizard;
+        HideAsrInstruction();
     }
 
     private void SyncItalianToggleFromWizard(bool enabled)
@@ -494,6 +590,79 @@ public class App : MonoBehaviour
 
         _itaToggleBtn.text = enabled ? "Italian Captions · On" : "Switch to Italian Captions";
         _itaToggleBtn.EnableInClassList("action-rail-btn-on", enabled);
+
+        if (_itaTranslationToggleBtn != null)
+        {
+            _itaTranslationToggleBtn.style.display = enabled ? DisplayStyle.Flex : DisplayStyle.None;
+            if (enabled)
+            {
+                _italianTranslationOn = true;
+                IsItalianTranslationEnabled = true;
+                _itaTranslationToggleBtn.text = "English Translation · On";
+                _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", true);
+            }
+            else
+            {
+                _italianTranslationOn = false;
+                IsItalianTranslationEnabled = false;
+                _itaTranslationToggleBtn.text = "English Translation · Off";
+                _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", false);
+            }
+        }
+
+        if (_translationToggleBtn != null)
+        {
+            _translationToggleBtn.style.display = (_audioOn && !enabled) ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+
+        if (enabled)
+        {
+            ShowAsrInstructionTemporarily();
+        }
+        else if (!_audioOn)
+        {
+            HideAsrInstruction();
+        }
+    }
+
+    private void ShowAsrInstructionTemporarily()
+    {
+        if (_asrTopInstructionLabel == null || string.IsNullOrWhiteSpace(_asrTopInstructionText))
+        {
+            return;
+        }
+
+        _asrTopInstructionLabel.text = _asrTopInstructionText.Trim();
+        _asrTopInstructionLabel.style.display = DisplayStyle.Flex;
+
+        if (_asrTopInstructionCo != null)
+        {
+            StopCoroutine(_asrTopInstructionCo);
+            _asrTopInstructionCo = null;
+        }
+
+        _asrTopInstructionCo = StartCoroutine(CoHideAsrInstructionAfterDelay());
+    }
+
+    private System.Collections.IEnumerator CoHideAsrInstructionAfterDelay()
+    {
+        yield return new WaitForSecondsRealtime(Mathf.Clamp(_asrTopInstructionVisibleSeconds, 5f, 600f));
+        HideAsrInstruction();
+    }
+
+    private void HideAsrInstruction()
+    {
+        if (_asrTopInstructionCo != null)
+        {
+            StopCoroutine(_asrTopInstructionCo);
+            _asrTopInstructionCo = null;
+        }
+
+        if (_asrTopInstructionLabel != null)
+        {
+            _asrTopInstructionLabel.text = "";
+            _asrTopInstructionLabel.style.display = DisplayStyle.None;
+        }
     }
 
     /// <summary>HoloLens/XR: prefer MainCamera; fallback to any enabled camera so world UI still parents correctly.</summary>
@@ -526,10 +695,12 @@ public class App : MonoBehaviour
     {
         _audioOn = false;
         _translationOn = false;
+        _italianTranslationOn = false;
         _signOn = false;
         _italianAsrOn = false;
         CurrentInputMode = InputMode.None;
         IsTranslationEnabled = false;
+        IsItalianTranslationEnabled = false;
 
         if (_asrToggleBtn != null)
         {
@@ -545,9 +716,16 @@ public class App : MonoBehaviour
 
         if (_translationToggleBtn != null)
         {
-            _translationToggleBtn.text = "Translation · Off";
+            _translationToggleBtn.text = "Italian Translation · Off";
             _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
             _translationToggleBtn.style.display = DisplayStyle.None;
+        }
+
+        if (_itaTranslationToggleBtn != null)
+        {
+            _itaTranslationToggleBtn.text = "English Translation · Off";
+            _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", false);
+            _itaTranslationToggleBtn.style.display = DisplayStyle.None;
         }
 
         if (_itaToggleBtn != null)

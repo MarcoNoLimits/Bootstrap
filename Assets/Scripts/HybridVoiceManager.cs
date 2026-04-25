@@ -46,6 +46,7 @@ public sealed class HybridVoiceManager : IDisposable
     private bool _micWasQuiet = true;
     private float _lastTranscriptAt;
     private float _lastSpeechAt;
+    private float _lastBargeInAt = -999f;
 
     public Action OnListeningStarted;
     public Action<string> OnHypothesis;
@@ -228,6 +229,7 @@ public sealed class HybridVoiceManager : IDisposable
         {
             _micWasQuiet = false;
             _lastSpeechAt = Time.realtimeSinceStartup;
+            _lastBargeInAt = Time.realtimeSinceStartup;
             HololensAsrManager.Instance?.ClearTranscriptContext();
             MainThreadDispatcher.RunOnMainThread(() => OnSpeechBargeIn?.Invoke());
         }
@@ -298,6 +300,17 @@ public sealed class HybridVoiceManager : IDisposable
         yield return new WaitForSecondsRealtime(pauseSeconds);
         _finalizeSentenceCo = null;
         if (_disposed || !_usingApi) yield break;
+
+        // If the user resumed speech right around the cutoff boundary, give ASR a short grace period
+        // so we avoid splitting one human sentence into two fragments.
+        const float resumeGraceSeconds = 0.75f;
+        float now = Time.realtimeSinceStartup;
+        if (now - _lastBargeInAt <= resumeGraceSeconds)
+        {
+            _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(resumeGraceSeconds));
+            yield break;
+        }
+
         if (!string.IsNullOrEmpty(_pendingTranslationText))
         {
             var t = _pendingTranslationText;
@@ -317,8 +330,6 @@ public sealed class HybridVoiceManager : IDisposable
                 }
             }
             HololensAsrManager.Instance?.ClearTranscriptContext();
-            // Mic/API capture never stopped; re-signal listening so UI does not look idle after a pause.
-            MainThreadDispatcher.RunOnMainThread(() => OnListeningStarted?.Invoke());
         }
     }
 

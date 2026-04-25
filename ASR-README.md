@@ -78,8 +78,33 @@ Explicit language mode is fastest and usually most stable.
 - `ASR_CPU_THREADS=2`
 - `ASR_CPU_INTEROP_THREADS=1`
 - `ASR_DUAL_DECODE=0`
+- `ASR_BACKEND=faster-whisper`
+- `ASR_FAST_COMPUTE_TYPE=int8`
+- `ASR_FAST_MODEL_EN=distil-large-v3`
+- `ASR_FAST_MODEL_IT=distil-large-v3`
+- `ASR_FAST_REALTIME_MODEL_EN=medium.en`
+- `ASR_FAST_REALTIME_MODEL_IT=medium`
+- `ASR_FAST_USE_REALTIME_FOR_FORCED=1`
 
 For lowest latency, choose `english` or `italian` explicitly instead of `auto`.
+
+### Current balanced realtime profile (no UI mode switching)
+
+The API is tuned to a single balanced profile for free CPU Spaces:
+
+- preserve most words (avoid aggressive dropping)
+- reduce runaway lag over time
+- suppress low-energy hallucination fragments
+
+Main defaults currently used by the API:
+
+- `ASR_WHISPER_MAX_NEW_TOKENS=224`
+- `ASR_DROP_WHEN_BUSY=0`
+- `ASR_RMS_SKIP_FORCED=0.0074`
+- `ASR_RMS_SKIP_AUTO=0.0072`
+- browser sender overlap tail: ~`0.45s` (to recover cut boundary words)
+
+If your HoloLens stream is still unstable, keep these values first and tune only one variable at a time.
 
 ### Hallucination/instability controls
 
@@ -124,6 +149,37 @@ If HoloLens still hallucinates or acts weird, verify in this order:
    - set forced language instead of `auto` during single-language sessions
 6. **Server logs**
    - check startup logs for applied env vars and thread settings
+
+### HoloLens update checklist (recommended)
+
+Use this exact checklist before changing models:
+
+1. **Force language from client**
+   - send `X-Forced-Language: english` for English sessions
+   - send `X-Forced-Language: italian` for Italian sessions
+   - avoid `auto` unless language truly switches mid-session
+2. **Audio format**
+   - mono, raw `float32` PCM, no WAV header
+   - normalized range near `[-1, 1]`
+3. **Chunking**
+   - target chunk duration around `1.6s - 2.6s`
+   - avoid too many tiny chunks (`< 0.8s`)
+4. **Silence handling**
+   - if random words appear while silent, raise `ASR_MIN_RMS` slightly (e.g. `0.008`)
+   - if words are dropped too often, lower `ASR_MIN_RMS` or `ASR_RMS_SKIP_FORCED` slightly
+5. **Redeploy after variable changes**
+   - Space variables only apply after restart/rebuild
+
+### How to read HF timing logs
+
+The API prints one timing line per `/audio` call:
+
+- `asr_ms`: model inference time (main latency driver)
+- `preprocess_ms`: audio prep time (normally small)
+- `chars`: output size (`0` often means silence/low-confidence chunk)
+- `dropped=silence|low_rms|busy`: chunk intentionally ignored by policy
+
+If you see many `chars=0` on `chunk_s > 2s`, your stream likely has low-energy/noisy segments and needs client-side gain/VAD tuning.
 
 ### Quick validation checklist
 

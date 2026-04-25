@@ -2182,8 +2182,8 @@ public class SignInferenceClient : MonoBehaviour
         // Output to main HUD caption
         if (_mainHudCaptionLabel != null)
         {
-            _mainHudCaptionLabel.text = displayStr;
-            _mainHudCaptionLabel.style.display = DisplayStyle.Flex;
+            _mainHudCaptionLabel.text = "";
+            _mainHudCaptionLabel.style.display = DisplayStyle.None;
         }
 
         return displayStr;
@@ -2269,8 +2269,8 @@ public class SignInferenceClient : MonoBehaviour
 
         if (_mainHudCaptionLabel != null)
         {
-            _mainHudCaptionLabel.text = caption;
-            _mainHudCaptionLabel.style.display = DisplayStyle.Flex;
+            _mainHudCaptionLabel.text = "";
+            _mainHudCaptionLabel.style.display = DisplayStyle.None;
         }
 
         SetLiveCaptionForHud(caption);

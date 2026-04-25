@@ -1,6 +1,7 @@
 <ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements" editor-extension-mode="False">
     <Style src="project://database/Assets/Resources/UI/Styles.uss?fileID=7433441132597879392&amp;guid=3472e228a666645478a446e7f8887783&amp;type=3#Styles" />
-    <ui:VisualElement style="flex-grow: 1; align-items: center; justify-content: center; background-color: transparent; padding-top: 98px; z-index: 20;">
-        <ui:Label name="subtitle-text" text="..." class="subtitle-text-label" style="margin-top: 22px; z-index: 21; background-color: rgba(0, 0, 0, 0.99); color: rgb(255, 255, 255); font-size: 42px; -unity-font-style: bold; padding-top: 14px; padding-bottom: 20px; padding-left: 40px; padding-right: 40px; border-radius: 18px; border-width: 1px; border-color: rgba(0, 0, 0, 0.68); white-space: normal; -unity-text-align: upper-center;" />
+    <ui:VisualElement style="flex-grow: 1; align-items: center; justify-content: center; background-color: rgba(0, 0, 0, 0.72); padding-top: 98px; z-index: 20;">
+        <ui:Label name="asr-instruction-text" text="" class="asr-instruction-label" />
+        <ui:Label name="subtitle-text" text="..." class="subtitle-text-label" style="margin-top: 22px; z-index: 21; background-color: rgba(0, 0, 0, 1.0); color: rgb(255, 255, 255); font-size: 42px; -unity-font-style: bold; padding-top: 14px; padding-bottom: 20px; padding-left: 40px; padding-right: 40px; border-radius: 18px; border-width: 1px; border-color: rgba(0, 0, 0, 0.20); white-space: normal; -unity-text-align: upper-center;" />
     </ui:VisualElement>
 </ui:UXML>

@@ -37,7 +37,7 @@ public class HololensAsrManager : MonoBehaviour
     [Tooltip("Sliding window length uploaded each request. Smaller windows reduce repeated transcripts.")]
     [SerializeField] private float _sendWindowSeconds = 2.2f;
     [Tooltip("Skip POST when chunk RMS is below this threshold (client-side silence guard).")]
-    [SerializeField] private float _minChunkRmsToSend = 0.0065f;
+    [SerializeField] private float _minChunkRmsToSend = 0.0074f;
     [SerializeField] private int _clipLengthSeconds = 30;
     [Header("Microphone selection")]
     [Tooltip("If set, prefer a microphone whose device name contains this text (case-insensitive).")]
