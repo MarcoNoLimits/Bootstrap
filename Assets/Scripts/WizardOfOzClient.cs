@@ -44,8 +44,8 @@ public class WizardOfOzClient : MonoBehaviour
     [Tooltip("If true, repeated empty API responses switch to local dictation. Keep false to avoid disconnects.")]
     [SerializeField] private bool allowApiEmptyResponseFallback = false;
 
-    [Tooltip("API-only: silence after last partial before phrase end (~850 ms matches realtime proxy VAD). Dictation fallback ignores this.")]
-    [SerializeField] private float asrPhraseEndSilenceSeconds = 1.65f;
+    [Tooltip("API-only: silence after last partial before phrase end (increase to reduce mid-sentence splits). Dictation fallback ignores this.")]
+    [SerializeField] private float asrPhraseEndSilenceSeconds = 2.2f;
     [Tooltip("If true, API mode can auto-fallback when no transcript is received for too long while speaking. Keep false to avoid silence-triggered mode switches.")]
     [SerializeField] private bool allowApiSilenceAutoFallback = false;
     [Header("ASR Runtime Tuning")]
@@ -54,7 +54,7 @@ public class WizardOfOzClient : MonoBehaviour
     [Tooltip("English API tuning: max send window in seconds.")]
     [SerializeField] private float englishAsrSendWindowSeconds = 2.2f;
     [Tooltip("English API tuning: skip sending chunks quieter than this RMS.")]
-    [SerializeField] private float englishAsrMinChunkRms = 0.0074f;
+    [SerializeField] private float englishAsrMinChunkRms = 0.0065f;
     [Tooltip("English API tuning: adaptive gain target RMS.")]
     [SerializeField] private float englishAsrAdaptiveGainTargetRms = 0.038f;
     [Tooltip("English API tuning: adaptive gain cap.")]
@@ -66,7 +66,7 @@ public class WizardOfOzClient : MonoBehaviour
     [Tooltip("Italian API tuning: window length in seconds.")]
     [SerializeField] private float italianAsrSendWindowSeconds = 2.2f;
     [Tooltip("Italian API tuning: lower silence gate to avoid dropping soft speech.")]
-    [SerializeField] private float italianAsrMinChunkRms = 0.0074f;
+    [SerializeField] private float italianAsrMinChunkRms = 0.0065f;
     [Tooltip("Italian API tuning: higher target RMS for clearer backend input.")]
     [SerializeField] private float italianAsrAdaptiveGainTargetRms = 0.040f;
     [Tooltip("Italian API tuning: adaptive gain cap.")]

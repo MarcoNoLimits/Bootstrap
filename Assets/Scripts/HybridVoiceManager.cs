@@ -222,8 +222,9 @@ public sealed class HybridVoiceManager : IDisposable
     private void OnMicLevelForBargeIn(float level)
     {
         if (!_usingApi || _disposed) return;
-        const float loud = 0.11f;
-        const float quiet = 0.035f;
+        // Slightly more sensitive thresholds for HoloLens mics so soft speech keeps the phrase alive.
+        const float loud = 0.075f;
+        const float quiet = 0.025f;
 
         if (_micWasQuiet && level >= loud)
         {
@@ -309,6 +310,23 @@ public sealed class HybridVoiceManager : IDisposable
         {
             _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(resumeGraceSeconds));
             yield break;
+        }
+        var asr = HololensAsrManager.Instance;
+        if (asr != null)
+        {
+            // Don't finalize while a chunk is still being decoded remotely.
+            if (asr.IsApiRequestInFlight)
+            {
+                _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(0.55f));
+                yield break;
+            }
+
+            // If mic still indicates recent speech, give ASR one extra grace window.
+            if (now - _lastSpeechAt <= 1.2f)
+            {
+                _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(0.45f));
+                yield break;
+            }
         }
 
         if (!string.IsNullOrEmpty(_pendingTranslationText))

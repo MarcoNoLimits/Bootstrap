@@ -36,6 +36,21 @@ public class HololensAsrManager : MonoBehaviour
     [SerializeField] private float _chunkSeconds = 1.8f;
     [Tooltip("Sliding window length uploaded each request. Smaller windows reduce repeated transcripts.")]
     [SerializeField] private float _sendWindowSeconds = 2.2f;
+    [Tooltip("Carry this much audio overlap into the next POST so words at chunk boundaries are not cut.")]
+    [SerializeField] private float _chunkOverlapSeconds = 0.45f;
+    [Header("Phrase-based flush (recommended)")]
+    [Tooltip("When enabled, upload after a speech pause instead of fixed short chunks.")]
+    [SerializeField] private bool _flushOnSpeechPause = true;
+    [Tooltip("Silence duration before phrase flush.")]
+    [SerializeField] private int _speechPauseSilenceMs = 1250;
+    [Tooltip("Ignore very short bursts below this duration.")]
+    [SerializeField] private int _minSpeechMs = 450;
+    [Tooltip("Safety flush while user keeps talking continuously.")]
+    [SerializeField] private float _maxPhraseSeconds = 7.5f;
+    [Tooltip("VAD threshold floor for mic RMS.")]
+    [SerializeField] private float _vadMinNoiseFloor = 0.006f;
+    [Tooltip("Speech threshold multiplier over rolling noise RMS.")]
+    [SerializeField] private float _vadSpeechMultiplier = 2.8f;
     [Tooltip("Skip POST when chunk RMS is below this threshold (client-side silence guard).")]
     [SerializeField] private float _minChunkRmsToSend = 0.0074f;
     [SerializeField] private int _clipLengthSeconds = 30;
@@ -74,6 +89,12 @@ public class HololensAsrManager : MonoBehaviour
     private bool _loggedResample;
     private float _lastEmptyTranscriptLogTime = -999f;
     private static string _logFilePath;
+    private float _lastMicRms = 0f;
+    private float _noiseRms = 0.01f;
+    private bool _speechActive;
+    private bool _speechQualified;
+    private float _speechStartedAtMs;
+    private float _lastSpeechAtMs;
 
     private static bool _quittingHookRegistered;
     private int _requestSeq;
@@ -182,6 +203,7 @@ public class HololensAsrManager : MonoBehaviour
     {
         _chunkSeconds = Mathf.Clamp(chunkSeconds, 0.4f, 2.5f);
         _sendWindowSeconds = Mathf.Clamp(sendWindowSeconds, _chunkSeconds + 0.2f, 6.0f);
+        _chunkOverlapSeconds = Mathf.Clamp(_chunkOverlapSeconds, 0f, Mathf.Max(0f, _chunkSeconds - 0.15f));
         _minChunkRmsToSend = Mathf.Clamp(minChunkRmsToSend, 0f, 0.03f);
         _adaptiveGainTargetRms = Mathf.Clamp(adaptiveGainTargetRms, 0.01f, 0.2f);
         _adaptiveGainMax = Mathf.Clamp(adaptiveGainMax, 1f, 24f);
@@ -240,6 +262,17 @@ public class HololensAsrManager : MonoBehaviour
         _emptyHttp200Streak = 0;
         _chunkSeconds = Mathf.Clamp(_chunkSeconds, 0.4f, 2.5f);
         _sendWindowSeconds = Mathf.Clamp(_sendWindowSeconds, _chunkSeconds + 0.25f, 6.0f);
+        _chunkOverlapSeconds = Mathf.Clamp(_chunkOverlapSeconds, 0f, Mathf.Max(0f, _chunkSeconds - 0.15f));
+        _maxPhraseSeconds = Mathf.Clamp(_maxPhraseSeconds, 1.2f, 20f);
+        _speechPauseSilenceMs = Mathf.Clamp(_speechPauseSilenceMs, 350, 4000);
+        _minSpeechMs = Mathf.Clamp(_minSpeechMs, 120, 3000);
+        _vadMinNoiseFloor = Mathf.Clamp(_vadMinNoiseFloor, 0.001f, 0.05f);
+        _vadSpeechMultiplier = Mathf.Clamp(_vadSpeechMultiplier, 1.2f, 6.0f);
+        _noiseRms = 0.01f;
+        _speechActive = false;
+        _speechQualified = false;
+        _speechStartedAtMs = 0f;
+        _lastSpeechAtMs = 0f;
         CurrentMicLevel = 0f;
         IsRunning = true;
 
@@ -366,18 +399,74 @@ public class HololensAsrManager : MonoBehaviour
 
             UpdateMicLevel(currentPos, totalSamples);
 
-            // Must use clip sample rate — NOT _sampleRate — or timing/window size is wrong vs Unity buffer.
+            // Phrase-based mode: wait for user pause before upload, with long safety flush.
             int minSamplesToSend = Mathf.RoundToInt(clipHz * _chunkSeconds);
-            if (deltaSamples < minSamplesToSend)
+            int sendSamples = 0;
+            float nowMs = Time.realtimeSinceStartup * 1000f;
+            if (_flushOnSpeechPause)
+            {
+                float threshold = Mathf.Max(_vadMinNoiseFloor, _noiseRms * _vadSpeechMultiplier);
+                bool isSpeechFrame = _lastMicRms > threshold;
+                if (isSpeechFrame)
+                {
+                    if (!_speechActive)
+                    {
+                        _speechActive = true;
+                        _speechQualified = false;
+                        _speechStartedAtMs = nowMs;
+                    }
+                    _lastSpeechAtMs = nowMs;
+                    if ((nowMs - _speechStartedAtMs) >= _minSpeechMs)
+                    {
+                        _speechQualified = true;
+                    }
+                }
+                else
+                {
+                    _noiseRms = 0.98f * _noiseRms + 0.02f * _lastMicRms;
+                }
+
+                bool pauseFlush = _speechActive
+                    && _speechQualified
+                    && (nowMs - _lastSpeechAtMs) >= _speechPauseSilenceMs;
+                bool maxLenFlush = _speechActive
+                    && _speechQualified
+                    && (nowMs - _speechStartedAtMs) >= (_maxPhraseSeconds * 1000f);
+
+                if (pauseFlush || maxLenFlush)
+                {
+                    sendSamples = deltaSamples;
+                    _speechActive = false;
+                    _speechQualified = false;
+                }
+            }
+            else
+            {
+                if (deltaSamples >= minSamplesToSend)
+                {
+                    int windowSamples = Mathf.RoundToInt(clipHz * _sendWindowSeconds);
+                    sendSamples = Mathf.Min(Mathf.Max(deltaSamples, minSamplesToSend), windowSamples);
+                }
+            }
+
+            if (sendSamples <= 0)
             {
                 yield return null;
                 continue;
             }
 
-            int windowSamples = Mathf.RoundToInt(clipHz * _sendWindowSeconds);
-            int sendSamples = Mathf.Min(Mathf.Max(deltaSamples, minSamplesToSend), windowSamples);
+            if (sendSamples < minSamplesToSend)
+            {
+                yield return null;
+                continue;
+            }
+
             float[] chunk = ExtractSamples(_lastMicSample, sendSamples, totalSamples);
-            _lastMicSample = currentPos;
+            int overlapSamples = Mathf.RoundToInt(clipHz * _chunkOverlapSeconds);
+            overlapSamples = Mathf.Clamp(overlapSamples, 0, Mathf.Max(0, sendSamples - 1));
+            int nextStart = currentPos - overlapSamples;
+            if (nextStart < 0) nextStart += totalSamples;
+            _lastMicSample = nextStart;
 
             if (clipHz != _sampleRate)
             {
@@ -516,6 +605,7 @@ public class HololensAsrManager : MonoBehaviour
         }
 
         float rms = Mathf.Sqrt(sum / tmp.Length);
+        _lastMicRms = rms;
         CurrentMicLevel = Mathf.Clamp01(rms * 7f);
         OnMicLevelUpdated?.Invoke(CurrentMicLevel);
     }
