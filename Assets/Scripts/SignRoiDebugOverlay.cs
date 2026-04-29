@@ -25,6 +25,11 @@ public class SignRoiDebugOverlay : MonoBehaviour
         {
             return;
         }
+        // Draw only during repaint to avoid interfering with Unity IMGUI layout passes.
+        if (Event.current == null || Event.current.type != EventType.Repaint)
+        {
+            return;
+        }
 
         if (!debugDraw || pipeline == null)
         {

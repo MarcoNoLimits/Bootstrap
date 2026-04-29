@@ -155,6 +155,8 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private Text statusHintText;
     [Tooltip("If no legacy Text is assigned, write status to UI Toolkit label 'subtitle-text'.")]
     [SerializeField] private bool useSubtitleLabelFallback = true;
+    [Tooltip("If true, SL UI shows caption text only (no no-hand/status/network/waiting messages).")]
+    [SerializeField] private bool captionOnlyMode = true;
     [SerializeField] private float confidenceThreshold = 0.55f;
     [SerializeField] private float minTop2Margin = 0.12f;
     [SerializeField] private int commitStableFrames = 3;
@@ -213,6 +215,7 @@ public class SignInferenceClient : MonoBehaviour
     private float _nextUiApplyAt;
     private string _lastServerText;
     private string _historyText = "";
+    private string _lastDisplayCaption = "";
     private string _candidateLetter = "";
     private int _candidateStableCount;
     private int _noHandFrames;
@@ -2065,7 +2068,7 @@ public class SignInferenceClient : MonoBehaviour
             }
 
             if (letterText != null)
-                letterText.text = noHandFriendlyMessage;
+                letterText.text = captionOnlyMode ? "" : noHandFriendlyMessage;
         }
         else
         {
@@ -2095,7 +2098,7 @@ public class SignInferenceClient : MonoBehaviour
                 }
 
                 if (letterText != null)
-                    letterText.text = normalizedLetter;
+                    letterText.text = captionOnlyMode ? "" : normalizedLetter;
             }
             else
             {
@@ -2103,11 +2106,12 @@ public class SignInferenceClient : MonoBehaviour
                 _candidateLetter = "";
                 _candidateStableCount = 0;
                 if (letterText != null)
-                    letterText.text = "…";
+                    letterText.text = captionOnlyMode ? "" : "…";
             }
         }
 
         string displayCaption = UpdateCaptionLinesFromBuffer();
+        _lastDisplayCaption = displayCaption ?? "";
 
         if (string.IsNullOrWhiteSpace(response.text))
             response.text = _historyText;
@@ -2229,7 +2233,11 @@ public class SignInferenceClient : MonoBehaviour
     private void ApplyCaptionToSubtitle()
     {
         string caption = "";
-        if (!string.IsNullOrEmpty(_inferCaptionLine))
+        if (captionOnlyMode)
+        {
+            caption = GetCaptionOnlyText();
+        }
+        else if (!string.IsNullOrEmpty(_inferCaptionLine))
         {
             caption = _inferCaptionLine;
         }
@@ -2274,6 +2282,23 @@ public class SignInferenceClient : MonoBehaviour
         }
 
         SetLiveCaptionForHud(caption);
+    }
+
+    private string GetCaptionOnlyText()
+    {
+        if (!string.IsNullOrWhiteSpace(_lastDisplayCaption))
+        {
+            return _lastDisplayCaption.Trim();
+        }
+        if (!string.IsNullOrWhiteSpace(_historyText))
+        {
+            return _historyText.Trim();
+        }
+        if (!string.IsNullOrWhiteSpace(_lastServerText))
+        {
+            return _lastServerText.Trim();
+        }
+        return string.Empty;
     }
 
     /// <summary>
@@ -2687,7 +2712,7 @@ public class SignInferenceClient : MonoBehaviour
         }
 
         var parts = new List<string>();
-        if (noHand)
+        if (noHand && !captionOnlyMode)
         {
             parts.Add(noHandFriendlyMessage);
         }
@@ -2705,12 +2730,12 @@ public class SignInferenceClient : MonoBehaviour
             parts.Add(r.text.Trim());
         }
 
-        if (!string.IsNullOrEmpty(r.detail))
+        if (!captionOnlyMode && !string.IsNullOrEmpty(r.detail))
         {
             parts.Add("status: " + r.detail);
         }
 
-        if (!string.IsNullOrEmpty(r.status_hint))
+        if (!captionOnlyMode && !string.IsNullOrEmpty(r.status_hint))
         {
             parts.Add(r.status_hint);
         }
