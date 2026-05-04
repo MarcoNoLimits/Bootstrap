@@ -5,6 +5,15 @@ using UnityEngine.XR.Interaction.Toolkit;
 
 public class WorldUIInputBridge : MonoBehaviour
 {
+    private static readonly string[] ActionRailButtonNames =
+    {
+        "btn-audio-toggle",
+        "btn-translation-toggle",
+        "btn-ita-asr-toggle",
+        "btn-ita-translation-toggle",
+        "btn-slr-capture"
+    };
+
     public UIDocument uiDoc;
     public RenderTexture renderTexture;
     public Collider targetCollider;
@@ -16,6 +25,7 @@ public class WorldUIInputBridge : MonoBehaviour
     [SerializeField] private float selectClickCooldownSeconds = 0.18f;
     [SerializeField] private float rayHitGraceSeconds = 0.12f;
     [SerializeField] private float pointerSmoothing = 22f;
+    [SerializeField] private bool strictSelectUsesCurrentRayHit = true;
 
     private XRRayInteractor _currentInteractor;
     private bool _isHovering;
@@ -37,18 +47,37 @@ public class WorldUIInputBridge : MonoBehaviour
         if (args.interactorObject is not XRRayInteractor rayInteractor) return;
         if (Time.time < _lastSelectClickTime + selectClickCooldownSeconds) return;
 
-        Vector2? panelPos = null;
-
+        Vector2 panelPos;
         if (TryGetUiRaycastHit(rayInteractor, out RaycastHit hit) && hit.collider == targetCollider)
-            panelPos = UpdateSmoothedPanelPosition(HitToPanelPosition(hit));
-        else if (_hasSmoothedPanelPos)
-            panelPos = _smoothedPanelPos;
-        else if (_lastHoverPanelPos.HasValue)
-            panelPos = _lastHoverPanelPos;
+        {
+            // Use the raw current hit for select clicks so each button keeps its own interaction zone.
+            panelPos = HitToPanelPosition(hit);
+            _lastHoverPanelPos = panelPos;
+            _smoothedPanelPos = panelPos;
+            _hasSmoothedPanelPos = true;
+        }
+        else
+        {
+            if (strictSelectUsesCurrentRayHit)
+            {
+                return;
+            }
 
-        if (!panelPos.HasValue) return;
+            if (_hasSmoothedPanelPos)
+            {
+                panelPos = _smoothedPanelPos;
+            }
+            else if (_lastHoverPanelPos.HasValue)
+            {
+                panelPos = _lastHoverPanelPos.Value;
+            }
+            else
+            {
+                return;
+            }
+        }
 
-        ClickUIAtPanelPosition(panelPos.Value);
+        ClickUIAtPanelPosition(panelPos, buttonsOnly: true);
         _lastSelectClickTime = Time.time;
     }
 
@@ -208,13 +237,27 @@ public class WorldUIInputBridge : MonoBehaviour
         return picked.GetFirstAncestorOfType<Button>();
     }
 
-    private void ClickUIAtPanelPosition(Vector2 panelPos)
+    private void ClickUIAtPanelPosition(Vector2 panelPos, bool buttonsOnly = false)
     {
         if (uiDoc == null || renderTexture == null) return;
 
+        panelPos.x = Mathf.Clamp(panelPos.x, 0f, renderTexture.width - 1f);
+        panelPos.y = Mathf.Clamp(panelPos.y, 0f, renderTexture.height - 1f);
+
         IPanel panel = uiDoc.rootVisualElement.panel;
-        VisualElement picked = panel.Pick(panelPos);
-        VisualElement target = ResolveClickableTarget(picked) ?? picked;
+        if (panel == null) return;
+
+        VisualElement target = null;
+        if (buttonsOnly)
+        {
+            target = ResolveActionRailButtonByZone(panelPos);
+        }
+
+        if (target == null)
+        {
+            VisualElement picked = panel.Pick(panelPos);
+            target = ResolveClickableTarget(picked) ?? picked;
+        }
 
         if (target == null) return;
 
@@ -245,6 +288,36 @@ public class WorldUIInputBridge : MonoBehaviour
             e.target = target;
             target.SendEvent(e);
         }
+    }
+
+    private VisualElement ResolveActionRailButtonByZone(Vector2 panelPos)
+    {
+        if (uiDoc == null || uiDoc.rootVisualElement == null)
+        {
+            return null;
+        }
+
+        var root = uiDoc.rootVisualElement;
+        for (int i = 0; i < ActionRailButtonNames.Length; i++)
+        {
+            Button btn = root.Q<Button>(ActionRailButtonNames[i]);
+            if (btn == null)
+            {
+                continue;
+            }
+
+            if (btn.resolvedStyle.display == DisplayStyle.None || !btn.visible || !btn.enabledInHierarchy)
+            {
+                continue;
+            }
+
+            if (btn.worldBound.Contains(panelPos))
+            {
+                return btn;
+            }
+        }
+
+        return null;
     }
 
     private bool TryGetUiRaycastHit(XRRayInteractor rayInteractor, out RaycastHit hit)

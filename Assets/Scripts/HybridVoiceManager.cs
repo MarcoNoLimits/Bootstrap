@@ -337,19 +337,34 @@ public sealed class HybridVoiceManager : IDisposable
             string rolled = HololensAsrManager.Instance != null
                 ? NormalizeTranscriptForDedupe(HololensAsrManager.Instance.RollingTranscript ?? string.Empty)
                 : string.Empty;
-            if (rolled.Length > normalized.Length)
-                normalized = rolled;
 
-            if (!string.IsNullOrEmpty(normalized))
+            // Prefer the richest candidate among pending, rolling, and very recent hypothesis.
+            string candidate = normalized;
+            if (rolled.Length > candidate.Length)
+            {
+                candidate = rolled;
+            }
+
+            bool hasRecentHypothesis = Time.realtimeSinceStartup - _lastHypothesisAt <= 2.5f;
+            if (hasRecentHypothesis && !string.IsNullOrWhiteSpace(_lastHypothesisText))
+            {
+                string recentHyp = NormalizeTranscriptForDedupe(_lastHypothesisText);
+                if (recentHyp.Length > candidate.Length)
+                {
+                    candidate = recentHyp;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(candidate))
             {
                 // Only skip exact repeats. The old prefix+length<=+4 rule dropped valid extensions like "... ARE YOU" vs "... ARE YOU TODAY"
                 // within 1.2s, so those words never reached translation.
-                bool duplicate = string.Equals(_lastCommittedSentence, normalized, StringComparison.OrdinalIgnoreCase);
+                bool duplicate = string.Equals(_lastCommittedSentence, candidate, StringComparison.OrdinalIgnoreCase);
                 if (!duplicate)
                 {
-                    _lastCommittedSentence = normalized;
+                    _lastCommittedSentence = candidate;
                     _lastCommittedAt = Time.realtimeSinceStartup;
-                    OnSentenceCompleted?.Invoke(normalized);
+                    OnSentenceCompleted?.Invoke(candidate);
                 }
             }
             HololensAsrManager.Instance?.ClearTranscriptContext();

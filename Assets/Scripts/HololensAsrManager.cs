@@ -1625,6 +1625,15 @@ public class HololensAsrManager : MonoBehaviour
         string prevT = (previous ?? string.Empty).Trim();
         string mergedT = merged.Trim();
         if (string.Equals(prevT, mergedT, StringComparison.OrdinalIgnoreCase)) return true;
+
+        // Keep legitimate tail growth (common when ASR emits progressive phrase extensions).
+        if (!string.IsNullOrEmpty(prevT)
+            && mergedT.StartsWith(prevT, StringComparison.OrdinalIgnoreCase)
+            && mergedT.Length >= prevT.Length + 3)
+        {
+            return false;
+        }
+
         return IsLikelyHallucination(mergedT);
     }
 
