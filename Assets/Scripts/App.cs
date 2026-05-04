@@ -18,7 +18,7 @@ public class App : MonoBehaviour
     [Tooltip("Positive = right side of the view (camera +X).")]
     [SerializeField] private float _rightOffsetMeters = 0.12f;
     [Tooltip("Optional vertical nudge (camera +Y). Higher moves the panel up.")]
-    [SerializeField] private float _verticalOffsetMeters = -0.06f;
+    [SerializeField] private float _verticalOffsetMeters = 0.04f;
     [Header("Scene Background")]
     [SerializeField] private Color _sceneBackgroundColor = new Color(0f, 0f, 0f, 0f);
 
@@ -275,6 +275,14 @@ public class App : MonoBehaviour
             _asrTopInstructionLabel.text = "";
             _asrTopInstructionLabel.style.display = DisplayStyle.None;
             _asrTopInstructionLabel.pickingMode = PickingMode.Ignore;
+        }
+
+        // Labels in the action rail (sign caption, instruction, debug) must not participate in panel.Pick
+        // or they steal XR ray-mapped clicks from the buttons in Italian / Sign modes.
+        var actionRail = root.Q<VisualElement>("action-rail");
+        if (actionRail != null)
+        {
+            actionRail.Query<Label>().ForEach(l => l.pickingMode = PickingMode.Ignore);
         }
 
         // 10. Pinch / click feedback (placeholder until wired to real audio / SLR / settings)

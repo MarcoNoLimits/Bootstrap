@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
@@ -14,11 +13,16 @@ using UnityEngine;
 /// </summary>
 public class HololensViewStreamer : MonoBehaviour
 {
+    private static HololensViewStreamer _instance;
+
     [Tooltip("Port for the viewer webpage (ensure it's not in use).")]
     [SerializeField] private int _port = 8080;
 
-    [Tooltip("Also bind LAN interfaces so other devices can open the stream URL. Requires URLACL/admin on Windows.")]
-    [SerializeField] private bool _allowLanAccess = false;
+    [Tooltip("Allow LAN clients (laptop/phone) to open the stream URL.")]
+    [SerializeField] private bool _allowLanAccess = true;
+
+    [Tooltip("Optional preferred device IP (tried first before wildcard LAN binding).")]
+    [SerializeField] private string _preferredDeviceIp = "172.16.4.56";
 
     [Tooltip("Stream width; height is derived from main camera aspect.")]
     [SerializeField] private int _streamWidth = 960;
@@ -39,6 +43,7 @@ public class HololensViewStreamer : MonoBehaviour
     private byte[] _latestFrame;
     private readonly object _frameLock = new object();
     private float _nextCaptureTime;
+    private string _lastStartError = "";
 
     private const string Html = @"<!DOCTYPE html>
 <html lang=""en"">
@@ -185,8 +190,31 @@ public class HololensViewStreamer : MonoBehaviour
 </body>
 </html>";
 
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    private static void AutoStart()
+    {
+        if (FindObjectOfType<HololensViewStreamer>() != null)
+        {
+            return;
+        }
+
+        GameObject go = new GameObject("HOLOLENS_VIEW_STREAMER");
+        go.AddComponent<HololensViewStreamer>();
+        DontDestroyOnLoad(go);
+        Debug.Log("[HololensViewStreamer] Auto-started.");
+    }
+
     private void Awake()
     {
+        if (_instance != null && _instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        _instance = this;
+        DontDestroyOnLoad(gameObject);
+
         _mainCam = Camera.main;
         if (_mainCam == null)
         {
@@ -251,28 +279,35 @@ public class HololensViewStreamer : MonoBehaviour
     private void StartServer()
     {
         if (_listener != null) return;
-        // First attempt: configured mode. If that fails due to permissions, fallback to localhost-only.
-        if (TryStartServer(_allowLanAccess))
-            return;
-
-        if (_allowLanAccess && TryStartServer(false))
+        if (_allowLanAccess)
         {
-            Debug.LogWarning(
-                "[HololensViewStreamer] LAN binding failed (likely URLACL/admin permission). " +
-                "Started in localhost-only mode instead.");
+            string preferred = (_preferredDeviceIp ?? "").Trim();
+            if (!string.IsNullOrEmpty(preferred) && TryStartServer(BuildSpecificIpPrefixes(preferred)))
+            {
+                return;
+            }
+
+            if (TryStartServer(BuildLanPrefixes()))
+            {
+                return;
+            }
+        }
+
+        if (TryStartServer(BuildLocalOnlyPrefixes()))
+        {
+            Debug.LogWarning("[HololensViewStreamer] Started in localhost-only mode. Remote devices cannot connect.");
             return;
         }
 
         Debug.LogError(
             "[HololensViewStreamer] Could not start server on port " + _port +
-            ". If another app uses this port, change _port. For LAN mode on Windows, run once in admin terminal:\n" +
-            "netsh http add urlacl url=http://+:" + _port + "/ user=Everyone");
+            ". Last start error: " + _lastStartError +
+            ". If another app uses this port, change _port.");
     }
 
-    private bool TryStartServer(bool allowLan)
+    private bool TryStartServer(string[] prefixes)
     {
         HttpListener listener = new HttpListener();
-        string[] prefixes = BuildPrefixes(allowLan);
         foreach (string p in prefixes)
         {
             listener.Prefixes.Add(p);
@@ -286,12 +321,14 @@ public class HololensViewStreamer : MonoBehaviour
             _serverThread = new Thread(ServerLoop);
             _serverThread.IsBackground = true;
             _serverThread.Start();
-            string[] urls = BuildCandidateViewerUrls(allowLan);
+            string[] urls = BuildCandidateViewerUrls(prefixes);
             Debug.Log("[HololensViewStreamer] Viewer URLs:\n - " + string.Join("\n - ", urls));
+            _lastStartError = "";
             return true;
         }
         catch (Exception e)
         {
+            _lastStartError = e.GetType().Name + ": " + e.Message;
             try
             {
                 listener.Close();
@@ -300,29 +337,45 @@ public class HololensViewStreamer : MonoBehaviour
             {
                 // ignore cleanup failure
             }
-            Debug.LogWarning("[HololensViewStreamer] Start failed (" + string.Join(", ", prefixes) + "): " + e.Message);
+            Debug.LogWarning("[HololensViewStreamer] Start failed (" + string.Join(", ", prefixes) + "): " + _lastStartError);
             return false;
         }
     }
 
-    private string[] BuildPrefixes(bool allowLan)
+    private string[] BuildLocalOnlyPrefixes()
     {
         var prefixes = new List<string>
         {
             "http://localhost:" + _port + "/",
             "http://127.0.0.1:" + _port + "/"
         };
-
-        if (allowLan)
-        {
-            // + binds all interfaces so phones/laptops on same LAN can access.
-            prefixes.Add("http://+:" + _port + "/");
-        }
-
         return prefixes.Distinct().ToArray();
     }
 
-    private string[] BuildCandidateViewerUrls(bool allowLan)
+    private string[] BuildLanPrefixes()
+    {
+        var prefixes = new List<string>
+        {
+            "http://*:" + _port + "/",
+            "http://+:" + _port + "/"
+        };
+        prefixes.AddRange(BuildLocalOnlyPrefixes());
+        return prefixes.Distinct().ToArray();
+    }
+
+    private string[] BuildSpecificIpPrefixes(string ip)
+    {
+        var prefixes = new List<string>
+        {
+            "http://" + ip + ":" + _port + "/",
+            "http://*:" + _port + "/",
+            "http://+:" + _port + "/"
+        };
+        prefixes.AddRange(BuildLocalOnlyPrefixes());
+        return prefixes.Distinct().ToArray();
+    }
+
+    private string[] BuildCandidateViewerUrls(string[] activePrefixes)
     {
         var urls = new List<string>
         {
@@ -330,8 +383,10 @@ public class HololensViewStreamer : MonoBehaviour
             "http://127.0.0.1:" + _port + "/"
         };
 
-        if (!allowLan)
-            return urls.Distinct().ToArray();
+        if (!string.IsNullOrWhiteSpace(_preferredDeviceIp))
+        {
+            urls.Add("http://" + _preferredDeviceIp.Trim() + ":" + _port + "/");
+        }
 
         try
         {
@@ -349,6 +404,20 @@ public class HololensViewStreamer : MonoBehaviour
         catch (Exception ex)
         {
             Debug.LogWarning("[HololensViewStreamer] Failed to enumerate LAN IPs: " + ex.Message);
+        }
+
+        for (int i = 0; i < activePrefixes.Length; i++)
+        {
+            string p = activePrefixes[i];
+            if (p.Contains("*") || p.Contains("+") || p.Contains("localhost") || p.Contains("127.0.0.1"))
+            {
+                continue;
+            }
+
+            if (Uri.TryCreate(p, UriKind.Absolute, out Uri uri))
+            {
+                urls.Add("http://" + uri.Host + ":" + uri.Port + "/");
+            }
         }
 
         return urls.Distinct().ToArray();
@@ -375,6 +444,9 @@ public class HololensViewStreamer : MonoBehaviour
                     if (frame != null && frame.Length > 0)
                     {
                         response.ContentType = "image/jpeg";
+                        response.AddHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+                        response.AddHeader("Pragma", "no-cache");
+                        response.AddHeader("Expires", "0");
                         response.ContentLength64 = frame.Length;
                         response.OutputStream.Write(frame, 0, frame.Length);
                     }
@@ -405,6 +477,11 @@ public class HololensViewStreamer : MonoBehaviour
 
     private void OnDestroy()
     {
+        if (_instance == this)
+        {
+            _instance = null;
+        }
+
         _running = false;
         try
         {
