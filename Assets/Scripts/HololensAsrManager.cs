@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -36,23 +37,31 @@ public class HololensAsrManager : MonoBehaviour
     [SerializeField] private float _chunkSeconds = 1.8f;
     [Tooltip("Sliding window length uploaded each request. Smaller windows reduce repeated transcripts.")]
     [SerializeField] private float _sendWindowSeconds = 2.2f;
-    [Tooltip("Carry this much audio overlap into the next POST so words at chunk boundaries are not cut.")]
-    [SerializeField] private float _chunkOverlapSeconds = 0.45f;
+    [Tooltip("Overlap carried into the next POST (~0.50–0.80s recommended; Space tuning often uses ~0.60s ASR_CHUNK_OVERLAP_SECONDS).")]
+    [SerializeField] private float _chunkOverlapSeconds = 0.62f;
     [Header("Phrase-based flush (recommended)")]
     [Tooltip("When enabled, upload after a speech pause instead of fixed short chunks.")]
     [SerializeField] private bool _flushOnSpeechPause = true;
     [Tooltip("Silence duration before phrase flush.")]
-    [SerializeField] private int _speechPauseSilenceMs = 1250;
+    [SerializeField] private int _speechPauseSilenceMs = 850;
     [Tooltip("Ignore very short bursts below this duration.")]
-    [SerializeField] private int _minSpeechMs = 450;
+    [SerializeField] private int _minSpeechMs = 260;
     [Tooltip("Safety flush while user keeps talking continuously.")]
-    [SerializeField] private float _maxPhraseSeconds = 7.5f;
+    [SerializeField] private float _maxPhraseSeconds = 3.2f;
+    [Tooltip("In pause-flush mode, minimum audio duration to send on phrase end.")]
+    [SerializeField] private float _minPauseFlushSeconds = 0.45f;
+    [Tooltip("Force-send buffered audio if phrase logic does not trigger in time.")]
+    [SerializeField] private float _hardFlushSeconds = 4.2f;
     [Tooltip("VAD threshold floor for mic RMS.")]
     [SerializeField] private float _vadMinNoiseFloor = 0.006f;
     [Tooltip("Speech threshold multiplier over rolling noise RMS.")]
     [SerializeField] private float _vadSpeechMultiplier = 2.8f;
     [Tooltip("Skip POST when chunk RMS is below this threshold (client-side silence guard).")]
     [SerializeField] private float _minChunkRmsToSend = 0.0074f;
+    [Tooltip("Minimum fraction of chunk samples that must look like speech energy before POST.")]
+    [SerializeField] private float _minSpeechFrameRatioToSend = 0.14f;
+    [Tooltip("Forced-language realtime guardrail: cap chunk upload duration near server default.")]
+    [SerializeField] private float _forcedLanguageHardCapSeconds = 3.2f;
     [SerializeField] private int _clipLengthSeconds = 30;
     [Header("Microphone selection")]
     [Tooltip("If set, prefer a microphone whose device name contains this text (case-insensitive).")]
@@ -61,11 +70,11 @@ public class HololensAsrManager : MonoBehaviour
     [SerializeField] private int _emptyHttp200StreakBeforeFallback = 10;
     [Header("Input level (matches HF Space preprocess: quiet audio is dropped server-side)")]
     [Tooltip("Boost quiet microphone PCM so RMS passes the Space ASR_MIN_RMS gate (~0.007 after server high-pass). Disable only for debugging.")]
-    [SerializeField] private bool _adaptiveInputGain = false;
+    [SerializeField] private bool _adaptiveInputGain = true;
     [SerializeField] private float _adaptiveGainTargetRms = 0.038f;
     [SerializeField] private float _adaptiveGainMax = 8f;
     [Tooltip("HF cold start / long clips; UnityWebRequest uses seconds.")]
-    [SerializeField] private int _requestTimeoutSeconds = 120;
+    [SerializeField] private int _requestTimeoutSeconds = 8;
     [Tooltip("Optional language hint for /audio API: english, italian, or auto/empty.")]
     [SerializeField] private string _forcedLanguage = "";
     private bool _warnedNonAudioEndpoint;
@@ -73,13 +82,19 @@ public class HololensAsrManager : MonoBehaviour
     /// <summary>Last <c>text_en</c> / <c>english</c> from Italian pipeline JSON, if present.</summary>
     public string LastEnglishFromApi { get; private set; } = "";
 
+    /// <summary>
+    /// Current merged rolling caption (overlap-merge across chunks). Prefer this over the last hypothesis snapshot when sending text to NMT.
+    /// </summary>
+    public string RollingTranscript => _latestText.ToString();
+
     private AudioClip _micClip;
     private string _micDevice;
     private Coroutine _captureCoroutine;
     private int _lastMicSample;
     private readonly StringBuilder _latestText = new StringBuilder();
     private bool _requestInFlight;
-    private byte[] _pendingFloat32Bytes;
+    /// <summary>Float32 LE mono chunks waiting while <see cref="_requestInFlight"/> (CPU Spaces drop overlapping requests; never overwrite).</summary>
+    private readonly Queue<byte[]> _pendingFloat32Queue = new Queue<byte[]>(8);
     private int _chunksUploaded;
     private int _requestAttemptCount;
     private int _requestSuccessCount;
@@ -99,6 +114,70 @@ public class HololensAsrManager : MonoBehaviour
     private static bool _quittingHookRegistered;
     private int _requestSeq;
     private int _emptyHttp200Streak;
+    /// <summary>Bumped when capture stops or mic fails so late HTTPS responses cannot mutate captions after session end.</summary>
+    private int _captureGeneration;
+    /// <summary>RMS of the float chunk last queued for POST (debug §5).</summary>
+    private float _lastPostedChunkRms;
+    /// <summary>Sample count of the chunk last queued for POST.</summary>
+    private int _lastPostedChunkSamples;
+
+    /// <summary>
+    /// Italian forced-decode is prone to hallucinating on HoloLens room tone when we boost/send marginal audio.
+    /// HF browser tests use cleaner push-to-mic levels than far-field capture + adaptive gain.
+    /// </summary>
+    private bool IsItalianStrictNoiseGuard =>
+        string.Equals(_forcedLanguage, "italian", StringComparison.OrdinalIgnoreCase);
+
+    private float EffectiveVadNoiseFloor() =>
+        IsItalianStrictNoiseGuard ? Mathf.Max(_vadMinNoiseFloor, 0.009f) : _vadMinNoiseFloor;
+
+    private float EffectiveVadSpeechMultiplier() =>
+        IsItalianStrictNoiseGuard ? Mathf.Max(_vadSpeechMultiplier, 3.55f) : _vadSpeechMultiplier;
+
+    private int EffectiveMinSpeechMs() =>
+        IsItalianStrictNoiseGuard ? Mathf.Max(_minSpeechMs, 420) : _minSpeechMs;
+
+    private int EffectiveSpeechPauseSilenceMs() =>
+        IsItalianStrictNoiseGuard ? Mathf.Max(_speechPauseSilenceMs, 980) : _speechPauseSilenceMs;
+
+    private float EffectiveMinPauseFlushSeconds() =>
+        IsItalianStrictNoiseGuard ? Mathf.Max(_minPauseFlushSeconds, 0.58f) : _minPauseFlushSeconds;
+
+    /// <summary>Higher floor for Italian — tiny bumps must not become POST bodies.</summary>
+    private float EffectiveMinChunkRmsToSend() =>
+        IsItalianStrictNoiseGuard ? Mathf.Max(_minChunkRmsToSend, 0.012f) : _minChunkRmsToSend;
+
+    private float EffectiveMinSpeechFrameRatioToSend() =>
+        IsItalianStrictNoiseGuard ? Mathf.Max(_minSpeechFrameRatioToSend, 0.18f) : Mathf.Max(0.12f, _minSpeechFrameRatioToSend);
+
+    /// <summary>
+    /// Contract profile: forced-language realtime chunks should stay around 1.8-3.2s and avoid >4s.
+    /// Keep a single bounded payload so we reduce both hallucination (noise tails) and dropped words (overly long decode latency).
+    /// </summary>
+    private float EffectiveForcedLanguageHardCapSeconds()
+    {
+        float configured = Mathf.Clamp(_forcedLanguageHardCapSeconds, 2.4f, 4.0f);
+        if (!string.IsNullOrWhiteSpace(_forcedLanguage))
+        {
+            configured = Mathf.Min(configured, 3.2f);
+        }
+
+        return configured;
+    }
+
+    private void ApplyAdaptiveGainForCurrentLanguage(float[] chunk)
+    {
+        if (!_adaptiveInputGain || chunk == null || chunk.Length == 0) return;
+        float target = _adaptiveGainTargetRms;
+        float maxG = _adaptiveGainMax;
+        if (IsItalianStrictNoiseGuard)
+        {
+            target = Mathf.Min(target, 0.028f);
+            maxG = Mathf.Min(maxG, 3.25f);
+        }
+
+        ApplyAdaptiveGain(chunk, target, maxG);
+    }
 
     private void Awake()
     {
@@ -134,6 +213,39 @@ public class HololensAsrManager : MonoBehaviour
         {
             AsrFileLog(full);
         }
+    }
+
+    /// <summary>Logs §5-style fields when debug file logging is on (text length, server timings, local RMS, backlog).</summary>
+    private void EmitAsrResponseDiagnostics(string requestId, string rawBody, string parsedText, int captureGenAtSend, int payloadBodyBytes)
+    {
+        TryReadJsonNumberAfterKey(rawBody, "infer_ms", out double inferMs);
+        TryReadJsonNumberAfterKey(rawBody, "total_ms", out double totalMs);
+        TryReadJsonNumberAfterKey(rawBody, "chunk_duration_s", out double chunkDurS);
+        int pendingQ = _pendingFloat32Queue.Count;
+        string tl = (parsedText ?? string.Empty).Length.ToString();
+        string ib = inferMs.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string tb = totalMs.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string cb = chunkDurS.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string rms = _lastPostedChunkRms.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
+        EmitStatus(
+            $"{requestId} diag text_len={tl} infer_ms={ib} total_ms={tb} chunk_duration_s={cb} payload_bytes={payloadBodyBytes} " +
+            $"posted_rms={rms} posted_samples={_lastPostedChunkSamples} pending_q={pendingQ} capture_gen_send={captureGenAtSend}");
+    }
+
+    private static bool TryReadJsonNumberAfterKey(string raw, string key, out double value)
+    {
+        value = 0;
+        if (string.IsNullOrEmpty(raw) || string.IsNullOrEmpty(key)) return false;
+        Match m = Regex.Match(
+            raw,
+            "\"" + Regex.Escape(key) + "\"\\s*:\\s*([-+]?(?:\\d*\\.?\\d+)(?:[eE][-+]?\\d+)?)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!m.Success) return false;
+        return double.TryParse(
+            m.Groups[1].Value,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out value);
     }
 
     /// <summary>Optional GET /health per API doc (same host as POST /audio).</summary>
@@ -263,7 +375,10 @@ public class HololensAsrManager : MonoBehaviour
         _chunkSeconds = Mathf.Clamp(_chunkSeconds, 0.4f, 2.5f);
         _sendWindowSeconds = Mathf.Clamp(_sendWindowSeconds, _chunkSeconds + 0.25f, 6.0f);
         _chunkOverlapSeconds = Mathf.Clamp(_chunkOverlapSeconds, 0f, Mathf.Max(0f, _chunkSeconds - 0.15f));
-        _maxPhraseSeconds = Mathf.Clamp(_maxPhraseSeconds, 1.2f, 20f);
+        _maxPhraseSeconds = Mathf.Clamp(_maxPhraseSeconds, 1.2f, 8f);
+        _minPauseFlushSeconds = Mathf.Clamp(_minPauseFlushSeconds, 0.2f, 1.2f);
+        _hardFlushSeconds = Mathf.Clamp(_hardFlushSeconds, 1.2f, 8f);
+        _forcedLanguageHardCapSeconds = Mathf.Clamp(_forcedLanguageHardCapSeconds, 2.4f, 4.0f);
         _speechPauseSilenceMs = Mathf.Clamp(_speechPauseSilenceMs, 350, 4000);
         _minSpeechMs = Mathf.Clamp(_minSpeechMs, 120, 3000);
         _vadMinNoiseFloor = Mathf.Clamp(_vadMinNoiseFloor, 0.001f, 0.05f);
@@ -318,6 +433,7 @@ public class HololensAsrManager : MonoBehaviour
     public void StopAsr()
     {
         if (!IsRunning) return;
+        _captureGeneration++;
         IsRunning = false;
 
         if (_captureCoroutine != null)
@@ -335,7 +451,7 @@ public class HololensAsrManager : MonoBehaviour
         _micDevice = null;
         _lastMicSample = 0;
         _requestInFlight = false;
-        _pendingFloat32Bytes = null;
+        _pendingFloat32Queue.Clear();
         CurrentMicLevel = 0f;
         OnMicLevelUpdated?.Invoke(CurrentMicLevel);
         EmitStatus("Microphone capture stopped.");
@@ -353,6 +469,7 @@ public class HololensAsrManager : MonoBehaviour
                     "Timeout: mic not recording in 8s. Privacy→Microphone. See " + _logFilePath);
                 Debug.LogError(
                     "[ASR] Timeout: Microphone never entered recording state (8s). Device='" + _micDevice + "'.");
+                _captureGeneration++;
                 IsRunning = false;
                 if (!string.IsNullOrEmpty(_micDevice) && Microphone.IsRecording(_micDevice))
                 {
@@ -362,7 +479,7 @@ public class HololensAsrManager : MonoBehaviour
                 _micClip = null;
                 _micDevice = null;
                 _requestInFlight = false;
-                _pendingFloat32Bytes = null;
+                _pendingFloat32Queue.Clear();
                 _captureCoroutine = null;
                 OnMicrophoneNotReady?.Invoke();
                 yield break;
@@ -401,11 +518,17 @@ public class HololensAsrManager : MonoBehaviour
 
             // Phrase-based mode: wait for user pause before upload, with long safety flush.
             int minSamplesToSend = Mathf.RoundToInt(clipHz * _chunkSeconds);
+            float minPauseFlushSec = EffectiveMinPauseFlushSeconds();
+            int minPauseSamplesToSend = Mathf.RoundToInt(clipHz * minPauseFlushSec);
+            float hardFlushSecondsEff = Mathf.Min(_hardFlushSeconds, EffectiveForcedLanguageHardCapSeconds());
+            int hardFlushSamples = Mathf.RoundToInt(clipHz * hardFlushSecondsEff);
             int sendSamples = 0;
             float nowMs = Time.realtimeSinceStartup * 1000f;
+            int minSpeechMsEff = EffectiveMinSpeechMs();
+            int speechPauseSilenceEff = EffectiveSpeechPauseSilenceMs();
             if (_flushOnSpeechPause)
             {
-                float threshold = Mathf.Max(_vadMinNoiseFloor, _noiseRms * _vadSpeechMultiplier);
+                float threshold = Mathf.Max(EffectiveVadNoiseFloor(), _noiseRms * EffectiveVadSpeechMultiplier());
                 bool isSpeechFrame = _lastMicRms > threshold;
                 if (isSpeechFrame)
                 {
@@ -416,7 +539,7 @@ public class HololensAsrManager : MonoBehaviour
                         _speechStartedAtMs = nowMs;
                     }
                     _lastSpeechAtMs = nowMs;
-                    if ((nowMs - _speechStartedAtMs) >= _minSpeechMs)
+                    if ((nowMs - _speechStartedAtMs) >= minSpeechMsEff)
                     {
                         _speechQualified = true;
                     }
@@ -428,16 +551,39 @@ public class HololensAsrManager : MonoBehaviour
 
                 bool pauseFlush = _speechActive
                     && _speechQualified
-                    && (nowMs - _lastSpeechAtMs) >= _speechPauseSilenceMs;
+                    && (nowMs - _lastSpeechAtMs) >= speechPauseSilenceEff;
                 bool maxLenFlush = _speechActive
                     && _speechQualified
                     && (nowMs - _speechStartedAtMs) >= (_maxPhraseSeconds * 1000f);
 
                 if (pauseFlush || maxLenFlush)
                 {
-                    sendSamples = deltaSamples;
+                    int flushCapSamples = Mathf.Max(minPauseSamplesToSend, hardFlushSamples);
+                    sendSamples = Mathf.Min(deltaSamples, flushCapSamples);
                     _speechActive = false;
                     _speechQualified = false;
+                }
+
+                // Guardrail: never stay silent forever with buffered audio.
+                if (sendSamples <= 0 && deltaSamples >= hardFlushSamples)
+                {
+                    if (IsItalianStrictNoiseGuard && !_speechQualified)
+                    {
+                        int keepOverlap = Mathf.RoundToInt(clipHz * Mathf.Clamp(_chunkOverlapSeconds, 0.12f, 0.95f));
+                        keepOverlap = Mathf.Clamp(keepOverlap, 0, Mathf.Max(0, totalSamples - 1));
+                        _lastMicSample = currentPos - keepOverlap;
+                        if (_lastMicSample < 0) _lastMicSample += totalSamples;
+                        _speechActive = false;
+                        _speechQualified = false;
+                        _noiseRms = Mathf.Max(0.001f, _noiseRms * 0.88f);
+                        yield return null;
+                        continue;
+                    }
+
+                    sendSamples = hardFlushSamples;
+                    _speechActive = false;
+                    _speechQualified = false;
+                    _noiseRms = Mathf.Max(0.001f, _noiseRms * 0.9f);
                 }
             }
             else
@@ -455,7 +601,8 @@ public class HololensAsrManager : MonoBehaviour
                 continue;
             }
 
-            if (sendSamples < minSamplesToSend)
+            int requiredMinSamples = _flushOnSpeechPause ? minPauseSamplesToSend : minSamplesToSend;
+            if (sendSamples < requiredMinSamples)
             {
                 yield return null;
                 continue;
@@ -479,17 +626,28 @@ public class HololensAsrManager : MonoBehaviour
                 chunk = ResampleLinear(chunk, clipHz, _sampleRate);
             }
 
-            if (_adaptiveInputGain)
-                ApplyAdaptiveGain(chunk, _adaptiveGainTargetRms, _adaptiveGainMax);
+            ApplyAdaptiveGainForCurrentLanguage(chunk);
 
-            if (ChunkRms(chunk) < Mathf.Max(0f, _minChunkRmsToSend))
+            float minRmsSend = Mathf.Max(0f, EffectiveMinChunkRmsToSend());
+            float chunkRms = ChunkRms(chunk);
+            if (chunkRms < minRmsSend)
             {
                 // Empty transcripts are valid for quiet chunks; skip local silence to reduce no-op requests.
                 yield return null;
                 continue;
             }
+            float speechThreshold = Mathf.Max(EffectiveVadNoiseFloor(), _noiseRms * EffectiveVadSpeechMultiplier());
+            float speechFrameRatio = EstimateSpeechFrameRatio(chunk, speechThreshold);
+            if (speechFrameRatio < EffectiveMinSpeechFrameRatioToSend())
+            {
+                // Prevent ambience/hiss chunks from reaching ASR (common hallucination trigger on far-field mics).
+                yield return null;
+                continue;
+            }
 
             byte[] float32Bytes = Float32ToBytes(chunk);
+            _lastPostedChunkRms = chunkRms;
+            _lastPostedChunkSamples = chunk.Length;
             QueueSend(float32Bytes);
             yield return null;
         }
@@ -534,6 +692,19 @@ public class HololensAsrManager : MonoBehaviour
         return (float)Math.Sqrt(sum / samples.Length);
     }
 
+    private static float EstimateSpeechFrameRatio(float[] samples, float threshold)
+    {
+        if (samples == null || samples.Length == 0) return 0f;
+        float t = Mathf.Max(1e-5f, threshold);
+        int hits = 0;
+        for (int i = 0; i < samples.Length; i++)
+        {
+            if (Mathf.Abs(samples[i]) >= t) hits++;
+        }
+
+        return hits / (float)samples.Length;
+    }
+
     /// <summary>Linear resample so POST body matches <see cref="_sampleRate"/> and X-Sample-Rate header.</summary>
     private static float[] ResampleLinear(float[] input, int inputRate, int outputRate)
     {
@@ -568,11 +739,56 @@ public class HololensAsrManager : MonoBehaviour
 
         if (_requestInFlight)
         {
-            _pendingFloat32Bytes = float32Bytes;
+            EnqueuePendingFloat32(float32Bytes);
             return;
         }
 
         StartCoroutine(SendChunkToApi(float32Bytes));
+    }
+
+    private void EnqueuePendingFloat32(byte[] float32Bytes)
+    {
+        if (float32Bytes == null || float32Bytes.Length == 0) return;
+        const int maxQueuedChunks = 16;
+        while (_pendingFloat32Queue.Count >= maxQueuedChunks)
+            _pendingFloat32Queue.Dequeue();
+        _pendingFloat32Queue.Enqueue(float32Bytes);
+    }
+
+    /// <summary>Merges queued float32 bodies in order, capped to ~<see cref="_hardFlushSeconds"/> of audio so one POST stays within realtime limits.</summary>
+    private byte[] TryTakeMergedPendingPayload()
+    {
+        if (_pendingFloat32Queue.Count == 0) return null;
+        float hardCapSeconds = Mathf.Min(Mathf.Clamp(_hardFlushSeconds, 1.2f, 8f), EffectiveForcedLanguageHardCapSeconds());
+        int maxBytes = Mathf.Max(4, Mathf.RoundToInt(_sampleRate * hardCapSeconds) * 4);
+        using (var ms = new MemoryStream(Mathf.Min(maxBytes, 262144)))
+        {
+            while (_pendingFloat32Queue.Count > 0)
+            {
+                byte[] chunk = _pendingFloat32Queue.Peek();
+                if (ms.Length == 0 && chunk.Length >= maxBytes)
+                {
+                    _pendingFloat32Queue.Dequeue();
+                    var head = new byte[maxBytes];
+                    Buffer.BlockCopy(chunk, 0, head, 0, maxBytes);
+                    if (chunk.Length > maxBytes)
+                    {
+                        var tail = new byte[chunk.Length - maxBytes];
+                        Buffer.BlockCopy(chunk, maxBytes, tail, 0, tail.Length);
+                        _pendingFloat32Queue.Enqueue(tail);
+                    }
+
+                    return head;
+                }
+
+                if (ms.Length + chunk.Length > maxBytes)
+                    break;
+                _pendingFloat32Queue.Dequeue();
+                ms.Write(chunk, 0, chunk.Length);
+            }
+
+            return ms.Length == 0 ? null : ms.ToArray();
+        }
     }
 
     private void UpdateMicLevel(int currentPos, int totalSamples)
@@ -641,9 +857,9 @@ public class HololensAsrManager : MonoBehaviour
     private IEnumerator SendChunkToApi(byte[] float32Bytes)
     {
         _requestInFlight = true;
+        int captureGenAtSend = _captureGeneration;
         string requestId = "asr-" + System.Threading.Interlocked.Increment(ref _requestSeq).ToString("D5");
         _requestAttemptCount++;
-        byte[] nextPending = null;
 
         try
         {
@@ -685,12 +901,10 @@ public class HololensAsrManager : MonoBehaviour
                 req.downloadHandler = new DownloadHandlerBuffer();
                 req.SetRequestHeader("Content-Type", "application/octet-stream");
                 req.SetRequestHeader("X-Sample-Rate", _sampleRate.ToString());
-                if (!string.IsNullOrWhiteSpace(_forcedLanguage))
-                {
-                    req.SetRequestHeader("X-Forced-Language", _forcedLanguage);
-                }
+                string forcedLang = string.IsNullOrWhiteSpace(_forcedLanguage) ? "english" : _forcedLanguage;
+                req.SetRequestHeader("X-Forced-Language", forcedLang);
                 req.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
-                req.timeout = Mathf.Clamp(_requestTimeoutSeconds, 30, 600);
+                req.timeout = Mathf.Clamp(_requestTimeoutSeconds, 2, 12);
                 yield return req.SendWebRequest();
 
                 if (req.result != UnityWebRequest.Result.Success)
@@ -706,9 +920,17 @@ public class HololensAsrManager : MonoBehaviour
                 }
                 else
                 {
+                    string rawBody = req.downloadHandler?.text ?? string.Empty;
+                    if (captureGenAtSend != _captureGeneration)
+                    {
+                        EmitStatus(
+                            $"{requestId} ignoring HTTP 200 (stale session; capture_gen_send={captureGenAtSend} now={_captureGeneration}).");
+                        OnApiRequestFinished?.Invoke(true);
+                        yield break;
+                    }
+
                     _chunksUploaded++;
                     _requestSuccessCount++;
-                    string rawBody = req.downloadHandler?.text ?? string.Empty;
                     if (_chunksUploaded <= 3 || _chunksUploaded % 20 == 0)
                     {
                         string preview = rawBody.Length > 160 ? rawBody.Substring(0, 160) + "…" : rawBody;
@@ -721,6 +943,11 @@ public class HololensAsrManager : MonoBehaviour
                     text = CleanHallucinatedPrefix(text);
                     text = RemoveImmediateRepeatedWords(text);
                     text = RemoveRepeatedTailPhrases(text);
+                    if (_writeAsrDebugFile)
+                    {
+                        EmitAsrResponseDiagnostics(requestId, rawBody, text, captureGenAtSend, float32Bytes.Length);
+                    }
+
                     if (string.IsNullOrWhiteSpace(text))
                     {
                         _requestParseEmptyCount++;
@@ -754,20 +981,29 @@ public class HololensAsrManager : MonoBehaviour
                     else
                     {
                         _emptyHttp200Streak = 0;
-                        string next = NormalizeCase(text);
-                        string prev = _latestText.ToString();
-                        if (ShouldAcceptTranscript(prev, next))
+                        if (LooksLikeMarginalNoiseCaption(text, IsItalianStrictNoiseGuard))
                         {
-                            _latestText.Length = 0;
-                            _latestText.Append(next);
-                            OnTextUpdated?.Invoke(_latestText.ToString());
+                            EmitStatus($"{requestId} skipped marginal decode (noise-shaped caption).");
+                            OnApiRequestFinished?.Invoke(true);
                         }
                         else
                         {
-                            EmitStatus($"{requestId} filter skipped update (prev={prev.Length} next={next.Length}).");
-                        }
+                            string next = NormalizeCase(text);
+                            string prev = _latestText.ToString();
+                            string merged = MergeOverlappingTranscript(prev, next);
+                            if (ShouldSkipMergedTranscriptUpdate(prev, merged))
+                            {
+                                EmitStatus($"{requestId} filter skipped update (prev={prev.Length} merged={merged.Length}).");
+                            }
+                            else
+                            {
+                                _latestText.Length = 0;
+                                _latestText.Append(merged);
+                                OnTextUpdated?.Invoke(_latestText.ToString());
+                            }
 
-                        OnApiRequestFinished?.Invoke(true);
+                            OnApiRequestFinished?.Invoke(true);
+                        }
                     }
                 }
             }
@@ -781,17 +1017,11 @@ public class HololensAsrManager : MonoBehaviour
                     $"summary attempts={_requestAttemptCount} ok={_requestSuccessCount} fail={_requestFailureCount} emptyText={_requestParseEmptyCount} inFlight={(IsApiRequestInFlight ? 1 : 0)}");
             }
 
-            if (_pendingFloat32Bytes != null && _pendingFloat32Bytes.Length > 0)
+            byte[] nextPending = TryTakeMergedPendingPayload();
+            if (IsRunning && nextPending != null && nextPending.Length > 0)
             {
-                nextPending = _pendingFloat32Bytes;
-                _pendingFloat32Bytes = null;
+                StartCoroutine(SendChunkToApi(nextPending));
             }
-        }
-
-        if (!IsRunning) yield break;
-        if (nextPending != null && nextPending.Length > 0)
-        {
-            StartCoroutine(SendChunkToApi(nextPending));
         }
     }
 
@@ -810,7 +1040,7 @@ public class HololensAsrManager : MonoBehaviour
             callReq.downloadHandler = new DownloadHandlerBuffer();
             callReq.SetRequestHeader("Content-Type", "application/json");
             callReq.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
-            callReq.timeout = Mathf.Clamp(_requestTimeoutSeconds, 30, 600);
+            callReq.timeout = Mathf.Clamp(_requestTimeoutSeconds, 2, 12);
             yield return callReq.SendWebRequest();
 
             callOk = callReq.result == UnityWebRequest.Result.Success;
@@ -826,7 +1056,7 @@ public class HololensAsrManager : MonoBehaviour
                 callReq2.downloadHandler = new DownloadHandlerBuffer();
                 callReq2.SetRequestHeader("Content-Type", "application/json");
                 callReq2.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
-                callReq2.timeout = Mathf.Clamp(_requestTimeoutSeconds, 30, 600);
+                callReq2.timeout = Mathf.Clamp(_requestTimeoutSeconds, 2, 12);
                 yield return callReq2.SendWebRequest();
 
                 callOk = callReq2.result == UnityWebRequest.Result.Success;
@@ -846,7 +1076,7 @@ public class HololensAsrManager : MonoBehaviour
         string streamUrl = _asrApiUrl.TrimEnd('/') + "/" + eventId;
         using (UnityWebRequest streamReq = UnityWebRequest.Get(streamUrl))
         {
-            streamReq.timeout = Mathf.Clamp(_requestTimeoutSeconds, 30, 600);
+            streamReq.timeout = Mathf.Clamp(_requestTimeoutSeconds, 2, 12);
             streamReq.SetRequestHeader("User-Agent", "Unity-HoloLens-ASR/1.0");
             yield return streamReq.SendWebRequest();
 
@@ -898,13 +1128,21 @@ public class HololensAsrManager : MonoBehaviour
                 yield break;
             }
 
+            if (LooksLikeMarginalNoiseCaption(text, IsItalianStrictNoiseGuard))
+            {
+                EmitStatus(requestId + " Gradio: skipped marginal decode.");
+                OnApiRequestFinished?.Invoke(true);
+                yield break;
+            }
+
             _emptyHttp200Streak = 0;
             string next = NormalizeCase(text);
             string prev = _latestText.ToString();
-            if (ShouldAcceptTranscript(prev, next))
+            string merged = MergeOverlappingTranscript(prev, next);
+            if (!ShouldSkipMergedTranscriptUpdate(prev, merged))
             {
                 _latestText.Length = 0;
-                _latestText.Append(next);
+                _latestText.Append(merged);
                 OnTextUpdated?.Invoke(_latestText.ToString());
             }
 
@@ -1288,6 +1526,108 @@ public class HololensAsrManager : MonoBehaviour
     }
 
 
+    /// <summary>
+    /// Far-field HoloLens noise often produces micro-captions/repeated tokens that rarely appear in HF browser tests.
+    /// </summary>
+    private static bool LooksLikeMarginalNoiseCaption(string text, bool italianMode)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return true;
+        string s = Regex.Replace(text.Trim(), "\\s+", " ");
+        if (s.Length <= 2) return true;
+        if (italianMode && Regex.IsMatch(s, "^[aeiouh]+$", RegexOptions.IgnoreCase)) return true;
+        MatchCollection tok = Regex.Matches(s, "\\b\\w+\\b");
+        if (tok.Count == 0) return true;
+        if (tok.Count == 1 && tok[0].Value.Length <= 2) return true;
+        if (tok.Count >= 2 && tok.Count <= 8)
+        {
+            string first = tok[0].Value;
+            int same = 0;
+            for (int i = 0; i < tok.Count; i++)
+            {
+                if (string.Equals(tok[i].Value, first, StringComparison.OrdinalIgnoreCase))
+                    same++;
+            }
+
+            if (same == tok.Count && first.Length <= 6)
+                return true;
+        }
+
+        if (!italianMode && tok.Count >= 3 && tok.Count <= 8)
+        {
+            int tiny = 0;
+            for (int i = 0; i < tok.Count; i++)
+            {
+                if (tok[i].Value.Length <= 2) tiny++;
+            }
+
+            if (tiny >= tok.Count - 1) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Builds a rolling caption: each POST returns a partial line for overlapping audio windows.
+    /// Strips the longest suffix-of-previous / prefix-of-new overlap so words are not doubled (HF CPU contract).
+    /// </summary>
+    private static string MergeOverlappingTranscript(string previousFull, string incomingChunk)
+    {
+        if (string.IsNullOrWhiteSpace(incomingChunk)) return previousFull ?? string.Empty;
+        string n = incomingChunk.Trim();
+        if (string.IsNullOrWhiteSpace(n)) return previousFull ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(previousFull)) return n;
+        string p = previousFull.TrimEnd();
+        if (p.Length == 0) return n;
+
+        if (p.IndexOf(n, StringComparison.OrdinalIgnoreCase) >= 0 && n.Length >= 8)
+            return p;
+
+        if (n.Length <= p.Length && p.EndsWith(n, StringComparison.OrdinalIgnoreCase))
+            return p;
+
+        const int minCharOverlap = 3;
+        int maxO = Mathf.Min(p.Length, n.Length);
+        int best = 0;
+        for (int len = maxO; len >= minCharOverlap; len--)
+        {
+            if (string.Compare(p, p.Length - len, n, 0, len, StringComparison.OrdinalIgnoreCase) == 0)
+            {
+                best = len;
+                break;
+            }
+        }
+
+        if (best <= 0 && maxO >= 1)
+        {
+            for (int len = Mathf.Min(maxO, minCharOverlap - 1); len >= 1; len--)
+            {
+                if (string.Compare(p, p.Length - len, n, 0, len, StringComparison.OrdinalIgnoreCase) == 0)
+                {
+                    best = len;
+                    break;
+                }
+            }
+        }
+
+        if (best > 0)
+        {
+            string tail = n.Length > best ? n.Substring(best).TrimStart() : string.Empty;
+            if (tail.Length == 0) return p;
+            return (p + " " + tail).Trim();
+        }
+
+        return (p + " " + n).Trim();
+    }
+
+    private static bool ShouldSkipMergedTranscriptUpdate(string previous, string merged)
+    {
+        if (string.IsNullOrWhiteSpace(merged)) return true;
+        string prevT = (previous ?? string.Empty).Trim();
+        string mergedT = merged.Trim();
+        if (string.Equals(prevT, mergedT, StringComparison.OrdinalIgnoreCase)) return true;
+        return IsLikelyHallucination(mergedT);
+    }
+
     private static bool IsLikelyHallucination(string next)
     {
         if (string.IsNullOrWhiteSpace(next)) return true;
@@ -1311,47 +1651,6 @@ public class HololensAsrManager : MonoBehaviour
             }
         }
         return false;
-    }
-
-    private static bool ShouldAcceptTranscript(string previous, string next)
-    {
-        if (string.IsNullOrWhiteSpace(next)) return false;
-        if (IsLikelyHallucination(next)) return false;
-        if (string.IsNullOrWhiteSpace(previous)) return true;
-        if (string.Equals(previous, next, StringComparison.Ordinal)) return false;
-        string prevNorm = RemoveRepeatedTailPhrases(RemoveImmediateRepeatedWords(previous));
-        string nextNorm = RemoveRepeatedTailPhrases(RemoveImmediateRepeatedWords(next));
-        if (string.Equals(prevNorm, nextNorm, StringComparison.OrdinalIgnoreCase))
-            return false;
-        // Keep stable context: reject abrupt tiny rewrites that do not overlap previous phrase.
-        if (previous.Length > 12 && next.Length < Mathf.FloorToInt(previous.Length * 0.65f)
-            && !previous.StartsWith(next, StringComparison.OrdinalIgnoreCase)
-            && !next.StartsWith(previous, StringComparison.OrdinalIgnoreCase))
-            return false;
-        // Reject only if the new text looks like a spurious shrink of the same line (same start, much shorter).
-        if (next.Length < Mathf.FloorToInt(previous.Length * 0.78f)
-            && !Regex.IsMatch(next, "[.!?]$")
-            && previous.StartsWith(next.Trim(), StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        // Guard against loop-style hallucinations where a line doubles itself.
-        string prevNorm2 = Regex.Replace(previous, "\\s+", " ").Trim();
-        string nextNorm2 = Regex.Replace(next, "\\s+", " ").Trim();
-        if (nextNorm2.Length > prevNorm2.Length * 1.4f
-            && nextNorm2.StartsWith(prevNorm2, StringComparison.OrdinalIgnoreCase))
-        {
-            string tail = nextNorm2.Substring(prevNorm2.Length).TrimStart();
-            if (!string.IsNullOrEmpty(tail)
-                && (prevNorm2.EndsWith(tail, StringComparison.OrdinalIgnoreCase)
-                    || tail.StartsWith(prevNorm2, StringComparison.OrdinalIgnoreCase)))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private void OnDestroy()

@@ -164,6 +164,7 @@ public sealed class HololensPvCpuImageSource : MonoBehaviour
 
         if (!arCameraManager.TryAcquireLatestCpuImage(out XRCpuImage image))
         {
+            TryNudgeCameraStartup(forceLog: false);
             errorMessage = "no CPU image (subsystem starting?)";
             return false;
         }

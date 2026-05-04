@@ -329,17 +329,22 @@ public sealed class HybridVoiceManager : IDisposable
             }
         }
 
-        if (!string.IsNullOrEmpty(_pendingTranslationText))
+        if (!string.IsNullOrEmpty(_pendingTranslationText) || HololensAsrManager.Instance != null)
         {
             var t = _pendingTranslationText;
             _pendingTranslationText = null;
-            string normalized = NormalizeTranscriptForDedupe(t);
+            string normalized = NormalizeTranscriptForDedupe(t ?? string.Empty);
+            string rolled = HololensAsrManager.Instance != null
+                ? NormalizeTranscriptForDedupe(HololensAsrManager.Instance.RollingTranscript ?? string.Empty)
+                : string.Empty;
+            if (rolled.Length > normalized.Length)
+                normalized = rolled;
+
             if (!string.IsNullOrEmpty(normalized))
             {
-                bool duplicate = string.Equals(_lastCommittedSentence, normalized, StringComparison.OrdinalIgnoreCase)
-                    || (Time.realtimeSinceStartup - _lastCommittedAt < 1.2f
-                        && normalized.StartsWith(_lastCommittedSentence ?? "", StringComparison.OrdinalIgnoreCase)
-                        && normalized.Length <= (_lastCommittedSentence ?? "").Length + 4);
+                // Only skip exact repeats. The old prefix+length<=+4 rule dropped valid extensions like "... ARE YOU" vs "... ARE YOU TODAY"
+                // within 1.2s, so those words never reached translation.
+                bool duplicate = string.Equals(_lastCommittedSentence, normalized, StringComparison.OrdinalIgnoreCase);
                 if (!duplicate)
                 {
                     _lastCommittedSentence = normalized;
