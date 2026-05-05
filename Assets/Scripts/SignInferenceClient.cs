@@ -22,6 +22,7 @@ using UnityEngine.UIElements;
 public class InferResponse
 {
     public string letter;
+    public string candidate_letter;
     public float confidence;
     public float top2_margin;
     public string detail;
@@ -52,7 +53,7 @@ public class InferResponse
 
 /// <summary>
 /// HoloLens inference client:
-/// - Primary path: PV via <c>XRCpuImage</c> → optimized JPEG → POST raw bytes to backend <c>/predict_hand</c> (<c>Content-Type: image/jpeg</c>).
+/// - Primary path: PV via <c>XRCpuImage</c> → optimized JPEG → POST raw bytes to backend <c>/predict</c> (<c>Content-Type: image/jpeg</c>).
 /// - Legacy: WebCamTexture / HF Gradio Space / on-device hand ROI modes.
 /// - Parses JSON (<c>predicted_letter</c>, <c>confidence</c>, <c>hand_detected</c>/<c>no_hand</c>) and updates UI.
 /// </summary>
@@ -81,16 +82,16 @@ public class SignInferenceClient : MonoBehaviour
     [Tooltip("Overridden at runtime when usePlatformDefaultApiUrl is true.")]
     [SerializeField] private string baseUrl = "https://mederbekaiana-sign-language.hf.space";
     [SerializeField] private string sessionId = "";
-    [SerializeField] private float requestTimeoutSeconds = 15f;
+    [SerializeField] private float requestTimeoutSeconds = 5f;
 
     [Header("PV CPU image pipeline (Health server)")]
     [Tooltip("Use AR Foundation XRCpuImage for HoloLens PV — no WebCamTexture; POST optimized JPEG frames to /predict.")]
     [SerializeField] private bool useXrCpuImagePipeline = true;
     [SerializeField] private HololensPvCpuImageSource pvCpuImageSource;
-    [Tooltip("Path on baseUrl for raw JPEG POST (default /predict_hand).")]
-    [SerializeField] private string inferEndpointPath = "/predict_hand";
+    [Tooltip("Path on baseUrl for raw JPEG POST (default /predict).")]
+    [SerializeField] private string inferEndpointPath = "/predict";
     [Tooltip("Minimum time between send attempts in ms (150–200 ≈ 5–6 FPS). Used when CPU pipeline is on.")]
-    [SerializeField] private float minSendIntervalMs = 175f;
+    [SerializeField] private float minSendIntervalMs = 150f;
     [Tooltip("Max width after resize/crop (default 640). Synced to HololensPvCpuImageSource on Start.")]
     [SerializeField] private int maxSendFrameWidth = 640;
     [Tooltip("Crop center region before resize (see HololensPvCpuImageSource).")]
@@ -214,6 +215,8 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private int autoSpaceNoHandFrames = 6;
     [SerializeField] private int endSentenceNoHandFrames = 15;
     [SerializeField] private int autoClearNoHandFrames = 40;
+    [Tooltip("Clear active sign caption state if no new committed letter arrives for this many seconds (independent of frame counts).")]
+    [SerializeField] private float captionIdleExpirySeconds = 15f;
     [SerializeField] private int maxCharsPerLine = 40;
     [SerializeField] private int maxHistoryChars = 96;
     [SerializeField] private int maxCompletedSentences = 2;
@@ -330,6 +333,7 @@ public class SignInferenceClient : MonoBehaviour
     private string _lastNetworkError = "";
     private bool _applicationIsQuitting;
     private int _requestSequence;
+    private App.InputMode _lastObservedInputMode = App.InputMode.None;
 #if UNITY_WSA && !UNITY_EDITOR
     private static bool _requestedWebCamUserAuthorization;
     /// <summary>UWP: false until <see cref="CoRequestWebCamUserAuthorizationOnce"/> finishes (prompt or already granted).</summary>
@@ -471,6 +475,7 @@ public class SignInferenceClient : MonoBehaviour
         aggressiveLetterCommitConfidence = Mathf.Clamp01(aggressiveLetterCommitConfidence);
         aggressiveLetterCommitMargin = Mathf.Clamp(aggressiveLetterCommitMargin, 0f, 1f);
         sameLetterResubmitCooldownSeconds = Mathf.Clamp(sameLetterResubmitCooldownSeconds, 0f, 5f);
+        captionIdleExpirySeconds = Mathf.Clamp(captionIdleExpirySeconds, 0f, 60f);
 
         _roiTexture = new Texture2D(targetSize, targetSize, TextureFormat.RGB24, false);
         _debugFrameDir = Path.Combine(Application.persistentDataPath, "sign_debug");
@@ -484,12 +489,12 @@ public class SignInferenceClient : MonoBehaviour
         useXrCpuImagePipeline = true;
         useHandRoiInference = false;
         useWebCamTexture = false;
-        minSendIntervalMs = 175f;
+        minSendIntervalMs = 100f;
         requestFps = 7f;
         dropIfRequestInFlight = true;
         jpegQuality = 88;
-        maxSendFrameWidth = 640;
-        inferEndpointPath = "/predict_hand";
+        maxSendFrameWidth = 480;
+        inferEndpointPath = "/predict";
         confidenceThreshold = 0.55f;
         minTop2Margin = 0.12f;
         commitStableFrames = 2;
@@ -513,7 +518,7 @@ public class SignInferenceClient : MonoBehaviour
         useHandRoiInference = false;
         dropIfRequestInFlight = true;
         stage1Only = false;
-        inferEndpointPath = "/predict_hand";
+        inferEndpointPath = "/predict";
         minSendIntervalMs = Mathf.Clamp(minSendIntervalMs, 150f, 200f);
         maxSendFrameWidth = Mathf.Clamp(maxSendFrameWidth, 160, 640);
         jpegQuality = Mathf.Clamp(jpegQuality, 85, 90);
@@ -742,6 +747,12 @@ public class SignInferenceClient : MonoBehaviour
             return;
         }
 
+        if (App.CurrentInputMode != _lastObservedInputMode)
+        {
+            ResetActiveCaptionState("mode_switch", clearComposedHistory: true, clearSentenceHistory: true);
+            _lastObservedInputMode = App.CurrentInputMode;
+        }
+
         // Only drive sign caption/rendering when Sign mode is active.
         // Prevents stale sign status when another input mode is selected.
         if (App.CurrentInputMode != App.InputMode.Sign)
@@ -756,10 +767,12 @@ public class SignInferenceClient : MonoBehaviour
 
         if (!signCaptureActive)
         {
+            MaybeExpireCaptionByTime();
             UpdateIdleStatusHint();
             return;
         }
 
+        MaybeExpireCaptionByTime();
         UpdateStatusHint();
 
         if (Time.time >= _nextUiApplyAt && !string.IsNullOrEmpty(_pendingLetter))
@@ -1747,7 +1760,7 @@ public class SignInferenceClient : MonoBehaviour
         float startedAt = Time.realtimeSinceStartup;
         string requestId = "sign-" + System.Threading.Interlocked.Increment(ref _requestSequence).ToString("D5");
         int jpegLen = jpegBytes?.Length ?? 0;
-        string path = string.IsNullOrEmpty(inferEndpointPath) ? "/predict_hand" : inferEndpointPath;
+        string path = string.IsNullOrEmpty(inferEndpointPath) ? "/predict" : inferEndpointPath;
         if (!path.StartsWith("/", StringComparison.Ordinal))
         {
             path = "/" + path;
@@ -2242,8 +2255,8 @@ public class SignInferenceClient : MonoBehaviour
             }
             else if (_noHandFrames == Mathf.Max(1, autoClearNoHandFrames))
             {
-                _captionLines[0] = "";
-                _captionLines[1] = "";
+                // Soft clear after long no-hand to avoid stale running text in the next signing burst.
+                ResetActiveCaptionState("auto_no_hand_soft_clear", clearComposedHistory: false, clearSentenceHistory: false);
             }
 
             if (letterText != null)
@@ -2465,6 +2478,72 @@ public class SignInferenceClient : MonoBehaviour
         ApplyCaptionToSubtitle();
     }
 
+    private bool HasActiveCaptionState()
+    {
+        return !string.IsNullOrWhiteSpace(_historyText)
+            || !string.IsNullOrWhiteSpace(_currentWordBuffer)
+            || !string.IsNullOrWhiteSpace(_captionLines[0])
+            || !string.IsNullOrWhiteSpace(_captionLines[1])
+            || !string.IsNullOrWhiteSpace(_lastDisplayCaption)
+            || !string.IsNullOrWhiteSpace(_candidateLetter);
+    }
+
+    private void MaybeExpireCaptionByTime()
+    {
+        float expiry = Mathf.Clamp(captionIdleExpirySeconds, 0f, 60f);
+        if (expiry <= 0f || _lastCommitAt <= 0f)
+        {
+            return;
+        }
+
+        if (Time.time - _lastCommitAt < expiry)
+        {
+            return;
+        }
+
+        if (!HasActiveCaptionState())
+        {
+            return;
+        }
+
+        ResetActiveCaptionState("idle_time_expiry", clearComposedHistory: false, clearSentenceHistory: false);
+    }
+
+    private void ResetActiveCaptionState(string reason, bool clearComposedHistory, bool clearSentenceHistory)
+    {
+        if (clearComposedHistory)
+        {
+            _historyText = "";
+        }
+        _currentWordBuffer = "";
+        _captionLines[0] = "";
+        _captionLines[1] = "";
+        _lastDisplayCaption = "";
+        _candidateLetter = "";
+        _candidateStableCount = 0;
+        _pendingLetter = null;
+        _lastAppliedLetter = "";
+        _lastCommittedSignLetter = "";
+        _noHandFrames = 0;
+        _weakLetterFrames = 0;
+        _consecutiveNoHandSeparatorFrames = 0;
+        _handSeparationReady = true;
+        _signClientState = SignClientState.Idle;
+        _inferCaptionLine = "";
+
+        if (clearSentenceHistory)
+        {
+            _sentenceHistory.Clear();
+        }
+
+        if (letterText != null)
+        {
+            letterText.text = "";
+        }
+
+        ApplyCaptionToSubtitle();
+    }
+
     private void UpdateIdleStatusHint()
     {
         SetLiveCaptionForHud("");
@@ -2606,6 +2685,7 @@ public class SignInferenceClient : MonoBehaviour
         {
             manual.letter = ReadJsonStringField(json, "predicted_letter");
         }
+        manual.candidate_letter = ReadJsonStringField(json, "candidate_letter");
         manual.text = ReadJsonStringField(json, "text");
         manual.status_hint = ReadJsonStringField(json, "status_hint");
         manual.model = ReadJsonStringField(json, "model");
@@ -2616,6 +2696,11 @@ public class SignInferenceClient : MonoBehaviour
             manual.confidence = cf;
         }
         string marginStr = ReadJsonNumberField(json, "top2_margin");
+        if (string.IsNullOrEmpty(marginStr))
+        {
+            // /predict may return "margin" while older paths returned "top2_margin".
+            marginStr = ReadJsonNumberField(json, "margin");
+        }
         if (!string.IsNullOrEmpty(marginStr)
             && float.TryParse(marginStr, NumberStyles.Float, CultureInfo.InvariantCulture, out float mg))
         {
@@ -2651,6 +2736,10 @@ public class SignInferenceClient : MonoBehaviour
                     manual.letter = ReadJsonStringField(wrapped, "letter");
                 }
             }
+            if (string.IsNullOrEmpty(manual.candidate_letter))
+            {
+                manual.candidate_letter = ReadJsonStringField(wrapped, "candidate_letter");
+            }
 
             if (manual.confidence <= 0f)
             {
@@ -2664,6 +2753,10 @@ public class SignInferenceClient : MonoBehaviour
             if (manual.top2_margin <= 0f)
             {
                 string nestedMargin = ReadJsonNumberField(wrapped, "top2_margin");
+                if (string.IsNullOrEmpty(nestedMargin))
+                {
+                    nestedMargin = ReadJsonNumberField(wrapped, "margin");
+                }
                 if (!string.IsNullOrEmpty(nestedMargin)
                     && float.TryParse(nestedMargin, NumberStyles.Float, CultureInfo.InvariantCulture, out float nestedMg))
                 {
@@ -2840,11 +2933,6 @@ public class SignInferenceClient : MonoBehaviour
             return true;
         }
 
-        if (string.Equals(r.letter, "NONE", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
         if (r.ServerHandDetectedSpecified && !r.hand_detected)
         {
             return true;
@@ -2853,6 +2941,37 @@ public class SignInferenceClient : MonoBehaviour
         if (r.hand_detected)
         {
             return false;
+        }
+
+        if (!string.IsNullOrEmpty(r.state))
+        {
+            string st = r.state.Trim();
+            if (st.Equals("tracking", StringComparison.OrdinalIgnoreCase)
+                || st.Equals("signing", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        if (string.Equals(r.letter, "NONE", StringComparison.OrdinalIgnoreCase))
+        {
+            // In /predict, NONE can also mean "gated this frame" (not necessarily no hand).
+            if (!string.IsNullOrEmpty(r.candidate_letter))
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(r.detail))
+            {
+                string d = r.detail.ToLowerInvariant();
+                if (d.Contains("no_hand") || d.Contains("no hand") || d.Contains("detector_lost"))
+                {
+                    return true;
+                }
+                return false;
+            }
+
+            return true;
         }
 
         if (!string.IsNullOrEmpty(r.letter))
