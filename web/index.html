@@ -188,6 +188,75 @@
     #sign-live-hint[hidden] {
       display: none !important;
     }
+    .perf-panel {
+      position: fixed;
+      left: 18px;
+      top: 18px;
+      width: min(96vw, 420px);
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      background: rgba(8, 18, 34, 0.82);
+      color: rgba(246, 249, 255, 0.98);
+      z-index: 50;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      font-size: 13px;
+    }
+    .perf-title {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .perf-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+      margin-bottom: 8px;
+    }
+    .perf-grid label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+    }
+    .perf-grid input {
+      padding: 7px 8px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      background: rgba(255, 255, 255, 0.07);
+      color: #fff;
+      font-family: inherit;
+      font-size: 12px;
+    }
+    .perf-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 7px;
+    }
+    .perf-actions button {
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      background: rgba(35, 88, 158, 0.75);
+      color: #fff;
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .perf-actions button.stop {
+      background: rgba(170, 42, 62, 0.82);
+    }
+    .perf-actions button.export {
+      background: rgba(39, 126, 92, 0.82);
+    }
+    #perf-live, #perf-last {
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre-line;
+      color: rgba(236, 245, 255, 0.96);
+    }
   </style>
 </head>
 <body>
@@ -205,6 +274,32 @@
     <button id="btn-settings" class="action-btn settings">Language translation</button>
     <button id="btn-sign" class="action-btn" title="Strict mode: hand should fill 35-55% of frame, centered, fingers fully visible, palm toward camera, no wrist rotation. Use bright front light and plain background. Optional stricter server: min_conf=0.80, stable_frames=10 (slower).">Start Sign Language</button>
     <div id="volume" class="volume"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+  </div>
+  <div class="perf-panel" id="perf-panel">
+    <div class="perf-title">Performance Capture (HoloLens Browser)</div>
+    <div class="perf-grid">
+      <label>Platform
+        <input id="perf-platform" type="text" value="WebXR" />
+      </label>
+      <label>Run ID
+        <input id="perf-run-id" type="number" min="1" value="1" />
+      </label>
+      <label>Observed load delay (min)
+        <input id="perf-load-min" type="number" min="0" step="0.1" value="0" />
+      </label>
+      <label>Notes
+        <input id="perf-notes" type="text" value="" placeholder="e.g. lag blocked testing" />
+      </label>
+    </div>
+    <div class="perf-actions">
+      <button id="perf-start">Start Run</button>
+      <button id="perf-stop" class="stop">Stop Run</button>
+      <button id="perf-export-last" class="export">Copy Last CSV Row</button>
+      <button id="perf-export-all" class="export">Download All Runs CSV</button>
+      <button id="perf-clear">Clear Local Runs</button>
+    </div>
+    <div id="perf-live">Run idle.</div>
+    <div id="perf-last"></div>
   </div>
   <div id="status" class="status">Ready.</div>
   <button type="button" id="btn-clear-caption" class="btn-clear-caption" title="Clear caption text">Clear text</button>
@@ -227,6 +322,7 @@
 
       var translationOn = false;
       var asrItalianToEnglishOn = false;
+      var statusUpdateCount = 0;
       function setStatus(t) { statusEl.textContent = t || ''; }
       function setTranslationButtonVisibility() { btnSettings.style.display = 'block'; }
       function refreshSettingsButtonUI() {
@@ -251,6 +347,210 @@
           }
         });
       }
+
+      // Browser-run metrics capture for reproducible XR comparison.
+      var perfPlatformEl = document.getElementById('perf-platform');
+      var perfRunIdEl = document.getElementById('perf-run-id');
+      var perfLoadMinEl = document.getElementById('perf-load-min');
+      var perfNotesEl = document.getElementById('perf-notes');
+      var perfStartBtn = document.getElementById('perf-start');
+      var perfStopBtn = document.getElementById('perf-stop');
+      var perfExportLastBtn = document.getElementById('perf-export-last');
+      var perfExportAllBtn = document.getElementById('perf-export-all');
+      var perfClearBtn = document.getElementById('perf-clear');
+      var perfLiveEl = document.getElementById('perf-live');
+      var perfLastEl = document.getElementById('perf-last');
+
+      var perfState = {
+        running: false,
+        runStartMs: 0,
+        runStartStatusUpdates: 0,
+        frameCount: 0,
+        frameTimesMs: [],
+        lagSpikesOver100ms: 0,
+        rafId: 0,
+        prevFrameTs: 0,
+        lastResult: null,
+      };
+      var PERF_STORAGE_KEY = 'holoassist.webxr.perf_runs.v1';
+
+      function nowMs() { return performance.now(); }
+
+      function getPerfRuns() {
+        try {
+          var raw = localStorage.getItem(PERF_STORAGE_KEY);
+          if (!raw) return [];
+          var parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (_) {
+          return [];
+        }
+      }
+      function savePerfRuns(runs) {
+        localStorage.setItem(PERF_STORAGE_KEY, JSON.stringify(runs || []));
+      }
+      function toNum(value, fallback) {
+        var n = Number(value);
+        return Number.isFinite(n) ? n : fallback;
+      }
+      function percentile(sortedValues, p) {
+        if (!sortedValues.length) return 0;
+        var idx = Math.ceil((p / 100) * sortedValues.length) - 1;
+        var safe = Math.max(0, Math.min(sortedValues.length - 1, idx));
+        return sortedValues[safe];
+      }
+      function perfCsvHeader() {
+        return 'platform,run_id,avg_fps,p95_frame_ms,avg_frame_ms,updates_per_sec,duration_sec,startup_delay_min,lag_spikes_over_100ms,notes';
+      }
+      function toCsvField(v) {
+        var s = (v == null ? '' : String(v));
+        if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
+          return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+      }
+      function toCsvRow(r) {
+        return [
+          r.platform,
+          r.run_id,
+          r.avg_fps.toFixed(2),
+          r.p95_frame_ms.toFixed(2),
+          r.avg_frame_ms.toFixed(2),
+          r.updates_per_sec.toFixed(2),
+          r.duration_sec.toFixed(2),
+          r.startup_delay_min.toFixed(2),
+          r.lag_spikes_over_100ms,
+          r.notes || '',
+        ].map(toCsvField).join(',');
+      }
+      function downloadTextFile(name, content) {
+        var blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function() {
+          URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+        }, 0);
+      }
+      async function copyText(text) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+      function perfTick(ts) {
+        if (!perfState.running) return;
+        if (perfState.prevFrameTs > 0) {
+          var dt = ts - perfState.prevFrameTs;
+          if (dt > 0 && dt < 2500) {
+            perfState.frameTimesMs.push(dt);
+            perfState.frameCount += 1;
+            if (dt >= 100) perfState.lagSpikesOver100ms += 1;
+          }
+        }
+        perfState.prevFrameTs = ts;
+        var elapsedSec = Math.max(0.001, (nowMs() - perfState.runStartMs) / 1000);
+        var fps = perfState.frameCount / elapsedSec;
+        perfLiveEl.textContent = 'Run active\nElapsed: ' + elapsedSec.toFixed(1) + ' s\nLive FPS: ' + fps.toFixed(2) + '\nLag spikes (>100ms): ' + perfState.lagSpikesOver100ms;
+        perfState.rafId = requestAnimationFrame(perfTick);
+      }
+      function startPerfRun() {
+        perfState.running = true;
+        perfState.runStartMs = nowMs();
+        perfState.runStartStatusUpdates = statusUpdateCount;
+        perfState.frameCount = 0;
+        perfState.frameTimesMs = [];
+        perfState.lagSpikesOver100ms = 0;
+        perfState.prevFrameTs = 0;
+        if (perfState.rafId) cancelAnimationFrame(perfState.rafId);
+        perfState.rafId = requestAnimationFrame(perfTick);
+        perfLiveEl.textContent = 'Run active\nCollecting metrics...';
+      }
+      function stopPerfRun() {
+        if (!perfState.running) return null;
+        perfState.running = false;
+        if (perfState.rafId) {
+          cancelAnimationFrame(perfState.rafId);
+          perfState.rafId = 0;
+        }
+        var elapsedSec = Math.max(0.001, (nowMs() - perfState.runStartMs) / 1000);
+        var sorted = perfState.frameTimesMs.slice().sort(function(a, b) { return a - b; });
+        var sum = perfState.frameTimesMs.reduce(function(acc, x) { return acc + x; }, 0);
+        var avgFrameMs = perfState.frameTimesMs.length ? (sum / perfState.frameTimesMs.length) : 0;
+        var p95FrameMs = percentile(sorted, 95);
+        var avgFps = perfState.frameCount / elapsedSec;
+        var updatesPerSec = (statusUpdateCount - perfState.runStartStatusUpdates) / elapsedSec;
+
+        var result = {
+          platform: (perfPlatformEl.value || 'WebXR').trim() || 'WebXR',
+          run_id: Math.max(1, Math.round(toNum(perfRunIdEl.value, 1))),
+          avg_fps: avgFps,
+          p95_frame_ms: p95FrameMs,
+          avg_frame_ms: avgFrameMs,
+          updates_per_sec: updatesPerSec,
+          duration_sec: elapsedSec,
+          startup_delay_min: Math.max(0, toNum(perfLoadMinEl.value, 0)),
+          lag_spikes_over_100ms: perfState.lagSpikesOver100ms,
+          notes: (perfNotesEl.value || '').trim(),
+          ts_iso: new Date().toISOString(),
+        };
+        perfState.lastResult = result;
+
+        var runs = getPerfRuns();
+        runs.push(result);
+        savePerfRuns(runs);
+
+        perfLastEl.textContent = 'Last run saved\navg_fps=' + result.avg_fps.toFixed(2) +
+          ', p95_ms=' + result.p95_frame_ms.toFixed(2) +
+          ', avg_ms=' + result.avg_frame_ms.toFixed(2) +
+          ', lag_spikes=' + result.lag_spikes_over_100ms +
+          ', startup_delay_min=' + result.startup_delay_min.toFixed(2);
+        perfLiveEl.textContent = 'Run stopped. Saved locally (' + runs.length + ' total runs).';
+        perfRunIdEl.value = String(result.run_id + 1);
+        return result;
+      }
+      function exportAllPerfRuns() {
+        var runs = getPerfRuns();
+        if (!runs.length) {
+          perfLiveEl.textContent = 'No local runs to export yet.';
+          return;
+        }
+        var lines = [perfCsvHeader()].concat(runs.map(toCsvRow));
+        var stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        downloadTextFile('webxr_hololens_perf_runs_' + stamp + '.csv', lines.join('\n') + '\n');
+        perfLiveEl.textContent = 'Exported ' + runs.length + ' runs to CSV.';
+      }
+
+      perfStartBtn.addEventListener('click', function() {
+        startPerfRun();
+      });
+      perfStopBtn.addEventListener('click', function() {
+        stopPerfRun();
+      });
+      perfExportLastBtn.addEventListener('click', async function() {
+        var r = perfState.lastResult;
+        if (!r) {
+          perfLiveEl.textContent = 'No completed run yet.';
+          return;
+        }
+        var ok = await copyText(toCsvRow(r));
+        perfLiveEl.textContent = ok ? 'Last CSV row copied.' : 'Copy failed. Use Download All Runs CSV.';
+      });
+      perfExportAllBtn.addEventListener('click', function() {
+        exportAllPerfRuns();
+      });
+      perfClearBtn.addEventListener('click', function() {
+        savePerfRuns([]);
+        perfState.lastResult = null;
+        perfLastEl.textContent = '';
+        perfLiveEl.textContent = 'Cleared local run history.';
+      });
 
       // ASR — one phrase per pause (see ASR/src/web_realtime_remote.py); no overlapping POSTs while speaking.
       var ASR_URL_EN = (typeof window !== 'undefined' && (window.HOLOASSIST_ASR_URL_EN || window.HOLOASSIST_ASR_URL)) || 'https://thedeezat-asr-hearing-impaired-api.hf.space/audio';
@@ -1044,6 +1344,13 @@
         else if (signRunning) setStatus('');
         else setStatus('Ready.');
       });
+
+      // Wrap status setter to count update throughput as an interaction metric.
+      var originalSetStatus = setStatus;
+      setStatus = function(t) {
+        statusUpdateCount += 1;
+        originalSetStatus(t);
+      };
     })();
   </script>
 </body>

@@ -1,0 +1,11 @@
+metric,platform,n_runs,mean,std,bootstrap_ci95_low,bootstrap_ci95_high,permutation_pvalue_vs_other_platform
+avg_fps,Unity_HoloLens2,1,49.47,,,,
+avg_fps,WebXR,1,31.0,,,,
+p95_frame_ms,Unity_HoloLens2,1,17.6,,,,
+p95_frame_ms,WebXR,1,33.0,,,,
+avg_frame_ms,Unity_HoloLens2,1,20.27,,,,
+avg_frame_ms,WebXR,1,32.26,,,,
+updates_per_sec,Unity_HoloLens2,1,8.47,,,,
+updates_per_sec,WebXR,1,7.12,,,,
+duration_sec,Unity_HoloLens2,1,15.0,,,,
+duration_sec,WebXR,1,15.0,,,,
