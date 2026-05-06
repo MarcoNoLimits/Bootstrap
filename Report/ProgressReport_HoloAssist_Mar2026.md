@@ -54,4 +54,55 @@ What remains is connecting the navigation buttons in the settings sidebar to act
 
 ---
 
+## WebXR-Only Metrics Snapshot (Current Run)
+
+The in-browser WebXR instrumentation now tracks run-level metrics and supports CSV export for report updates.
+
+- **Scenario:** WebXR standalone page (`web/index.html`) with local camera preview enabled
+- **Run ID:** 1
+- **Capture method:** Browser performance panel (`Start Run` -> `Stop Run` -> `Copy Last CSV Row` / `Download All Runs CSV`)
+
+### Metrics Row Template (for report table)
+
+`platform,run_id,avg_fps,p95_frame_ms,avg_frame_ms,updates_per_sec,duration_sec,startup_delay_min,lag_spikes_over_100ms,notes,ts_iso`
+
+### Current Reporting Notes
+
+- Use **`Copy Last CSV Row`** for quick paste into the report sheet.
+- Use **`Download All Runs CSV`** for full run history.
+- If headset browser blocks file save/copy, the page now falls back to console variables:
+  - `window.__holoassistPerfLastCsv`
+  - `window.__holoassistPerfCsv`
+
+### Imported Results (CSV: 2026-05-06)
+
+From `webxr_hololens_perf_runs_2026-05-06T14-56-33-956Z.csv`:
+
+- Run sample 1 (current unlabeled/general): `avg_fps=240.02`, `p95_frame_ms=4.30`, `avg_frame_ms=4.17`, `duration_sec=10.34`, `lag_spikes_over_100ms=0`
+- Run sample 2 (current unlabeled/general): `avg_fps=234.92`, `p95_frame_ms=4.30`, `avg_frame_ms=4.26`, `duration_sec=66.01`, `lag_spikes_over_100ms=1`
+
+These rows were captured before per-feature labeling, so they should be treated as baseline/general runs.
+
+### Detailed Per-Feature Metrics Plan
+
+Capture at least 3 runs per feature (30-60s each), then compare median values:
+
+- **General/Idle:** camera preview only, no ASR/SL running
+- **ASR only:** start ASR, translation OFF
+- **SL only:** start Sign Language, translation OFF
+- **ASR + Translation:** ASR ON + translation ON
+- **SL + Translation:** SL ON + translation ON
+
+Recommended summary fields in report:
+
+- Median FPS
+- Median p95 frame time
+- Median average frame time
+- Mean status updates/sec
+- Total lag spikes over 100ms
+
+The WebXR page now includes a **Feature tag** field (`Auto`, `General`, `ASR`, `SL`, `Translation`, `ASR+Translation`, `SL+Translation`) and exports it in CSV as the `feature` column.
+
+---
+
 *All information in this report is based directly on source files in the `Assets/` directory as of March 25, 2026.*

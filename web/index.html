@@ -70,6 +70,14 @@
       background: rgba(34, 138, 70, 0.94);
       border: 1px solid rgba(120, 230, 160, 0.65);
     }
+    #btn-ita-asr {
+      background: rgba(108, 94, 158, 0.99);
+      border: 1px solid rgba(186, 170, 235, 0.72);
+    }
+    #btn-ita-asr.active {
+      background: rgba(128, 112, 184, 1);
+      box-shadow: 0 0 18px rgba(184, 162, 255, 0.55);
+    }
     .action-btn.settings {
       background: transparent;
       border: 2px solid rgba(255,255,255,0.38);
@@ -89,6 +97,10 @@
       background: rgba(40,160,90,0.92);
       color: #ffffff;
       box-shadow: 0 0 18px rgba(80, 220, 150, 0.5);
+    }
+    .action-btn.tap-active {
+      transform: scale(0.985);
+      filter: brightness(1.06);
     }
     #btn-asr.active {
       background: rgba(45, 120, 215, 0.94);
@@ -271,6 +283,7 @@
 
   <div class="hud">
     <button id="btn-asr" class="action-btn">Start ASR</button>
+    <button id="btn-ita-asr" class="action-btn">Switch to Italian Captions</button>
     <button id="btn-settings" class="action-btn settings">Language translation</button>
     <button id="btn-sign" class="action-btn" title="Strict mode: hand should fill 35-55% of frame, centered, fingers fully visible, palm toward camera, no wrist rotation. Use bright front light and plain background. Optional stricter server: min_conf=0.80, stable_frames=10 (slower).">Start Sign Language</button>
     <div id="volume" class="volume"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
@@ -286,6 +299,17 @@
       </label>
       <label>Observed load delay (min)
         <input id="perf-load-min" type="number" min="0" step="0.1" value="0" />
+      </label>
+      <label>Feature tag
+        <select id="perf-feature">
+          <option value="auto" selected>Auto</option>
+          <option value="general">General</option>
+          <option value="asr">ASR</option>
+          <option value="sign">SL</option>
+          <option value="translation">Translation</option>
+          <option value="asr_translation">ASR+Translation</option>
+          <option value="sign_translation">SL+Translation</option>
+        </select>
       </label>
       <label>Notes
         <input id="perf-notes" type="text" value="" placeholder="e.g. lag blocked testing" />
@@ -307,6 +331,8 @@
   <script>
     (function cameraBackground() {
       var cam = document.getElementById('camera-bg');
+      if (!cam) return;
+      if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') return;
       navigator.mediaDevices.getUserMedia({ video: true, audio: false })
         .then(function(stream) { cam.srcObject = stream; })
         .catch(function() { /* keep fallback background */ });
@@ -315,6 +341,7 @@
     (function app() {
       var btnAsr = document.getElementById('btn-asr');
       var btnSign = document.getElementById('btn-sign');
+      var btnItaAsr = document.getElementById('btn-ita-asr');
       var btnSettings = document.getElementById('btn-settings');
       var statusEl = document.getElementById('status');
       var cameraBg = document.getElementById('camera-bg');
@@ -325,14 +352,74 @@
       var statusUpdateCount = 0;
       function setStatus(t) { statusEl.textContent = t || ''; }
       function setTranslationButtonVisibility() { btnSettings.style.display = 'block'; }
-      function refreshSettingsButtonUI() {
-        if (asrRunning) {
-          btnSettings.textContent = asrItalianToEnglishOn ? 'Italian -> English ASR . On' : 'Italian -> English ASR';
-          btnSettings.classList.toggle('active', asrItalianToEnglishOn);
-          return;
+      // HoloLens Edge input can surface as pointer/touch/keyboard instead of a plain click.
+      // Bind all common "press" paths so buttons work reliably on-device.
+      function bindPress(el, handler) {
+        if (!el || typeof handler !== 'function') return;
+        var lastFireAt = 0;
+        function run(ev) {
+          var now = Date.now();
+          if (now - lastFireAt < 250) return;
+          lastFireAt = now;
+          el.classList.add('tap-active');
+          setTimeout(function() { el.classList.remove('tap-active'); }, 140);
+          if (ev) {
+            if (typeof ev.stopPropagation === 'function') ev.stopPropagation();
+          }
+          handler(ev);
         }
+        // Direct onclick fallback is important for some HoloLens browser input paths.
+        el.onclick = run;
+        el.addEventListener('click', run, false);
+        el.addEventListener('pointerup', run, false);
+        el.addEventListener('mouseup', run, false);
+        el.addEventListener('touchend', run, false);
+        el.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') run(e);
+        });
+      }
+      function hasSecureMediaContext() {
+        if (typeof window === 'undefined' || !window.location) return false;
+        var h = window.location.hostname || '';
+        return window.location.protocol === 'https:' || h === 'localhost' || h === '127.0.0.1';
+      }
+      function supportsMediaDevices() {
+        return !!(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function');
+      }
+      function explainSecureContextNeed(featureName) {
+        setStatus(featureName + ' requires HTTPS (or localhost). Current URL is not secure for camera/microphone access.');
+      }
+      async function ensureMediaPermission(constraints, featureName) {
+        if (!supportsMediaDevices()) {
+          setStatus('Browser does not support media capture APIs for ' + featureName + '.');
+          throw new Error('MediaDevices API unavailable for ' + featureName);
+        }
+        if (!hasSecureMediaContext()) {
+          explainSecureContextNeed(featureName);
+          throw new Error('Insecure context for ' + featureName);
+        }
+        try {
+          var tempStream = await navigator.mediaDevices.getUserMedia(constraints);
+          tempStream.getTracks().forEach(function(t) { t.stop(); });
+        } catch (err) {
+          var name = (err && err.name) ? err.name : 'Error';
+          if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+            setStatus('Permission denied for ' + featureName + '. Allow browser access and try again.');
+          } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+            setStatus('No input device found for ' + featureName + '.');
+          } else {
+            setStatus(featureName + ' permission failed: ' + name);
+          }
+          throw err;
+        }
+      }
+      function refreshSettingsButtonUI() {
         btnSettings.textContent = translationOn ? 'Language translation . On' : 'Language translation';
         btnSettings.classList.toggle('active', translationOn);
+      }
+      function refreshItalianAsrButtonUI() {
+        btnItaAsr.textContent = asrItalianToEnglishOn ? 'Italian Captions . On' : 'Switch to Italian Captions';
+        btnItaAsr.classList.toggle('active', asrItalianToEnglishOn);
       }
 
       function setBars(level) {
@@ -352,6 +439,7 @@
       var perfPlatformEl = document.getElementById('perf-platform');
       var perfRunIdEl = document.getElementById('perf-run-id');
       var perfLoadMinEl = document.getElementById('perf-load-min');
+      var perfFeatureEl = document.getElementById('perf-feature');
       var perfNotesEl = document.getElementById('perf-notes');
       var perfStartBtn = document.getElementById('perf-start');
       var perfStopBtn = document.getElementById('perf-stop');
@@ -400,7 +488,7 @@
         return sortedValues[safe];
       }
       function perfCsvHeader() {
-        return 'platform,run_id,avg_fps,p95_frame_ms,avg_frame_ms,updates_per_sec,duration_sec,startup_delay_min,lag_spikes_over_100ms,notes';
+        return 'platform,run_id,feature,avg_fps,p95_frame_ms,avg_frame_ms,updates_per_sec,duration_sec,startup_delay_min,lag_spikes_over_100ms,notes';
       }
       function toCsvField(v) {
         var s = (v == null ? '' : String(v));
@@ -413,6 +501,7 @@
         return [
           r.platform,
           r.run_id,
+          r.feature || 'general',
           r.avg_fps.toFixed(2),
           r.p95_frame_ms.toFixed(2),
           r.avg_frame_ms.toFixed(2),
@@ -423,18 +512,42 @@
           r.notes || '',
         ].map(toCsvField).join(',');
       }
+      function detectActiveFeatureLabel() {
+        if (asrRunning && translationOn) return 'asr_translation';
+        if (signRunning && translationOn) return 'sign_translation';
+        if (asrRunning) return 'asr';
+        if (signRunning) return 'sign';
+        if (translationOn) return 'translation';
+        return 'general';
+      }
+      function currentFeatureLabel() {
+        var manual = perfFeatureEl && perfFeatureEl.value ? String(perfFeatureEl.value).trim() : 'auto';
+        if (!manual || manual === 'auto') return detectActiveFeatureLabel();
+        return manual;
+      }
       function downloadTextFile(name, content) {
-        var blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(function() {
-          URL.revokeObjectURL(url);
-          document.body.removeChild(a);
-        }, 0);
+        try {
+          var blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+          if (typeof navigator !== 'undefined' && typeof navigator.msSaveOrOpenBlob === 'function') {
+            navigator.msSaveOrOpenBlob(blob, name);
+            return true;
+          }
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = name;
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(function() {
+            try { URL.revokeObjectURL(url); } catch (_) {}
+            try { document.body.removeChild(a); } catch (_) {}
+          }, 0);
+          return true;
+        } catch (e) {
+          console.warn('[Perf] download failed:', e);
+          return false;
+        }
       }
       async function copyText(text) {
         try {
@@ -490,6 +603,7 @@
         var result = {
           platform: (perfPlatformEl.value || 'WebXR').trim() || 'WebXR',
           run_id: Math.max(1, Math.round(toNum(perfRunIdEl.value, 1))),
+          feature: currentFeatureLabel(),
           avg_fps: avgFps,
           p95_frame_ms: p95FrameMs,
           avg_frame_ms: avgFrameMs,
@@ -523,29 +637,43 @@
         }
         var lines = [perfCsvHeader()].concat(runs.map(toCsvRow));
         var stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        downloadTextFile('webxr_hololens_perf_runs_' + stamp + '.csv', lines.join('\n') + '\n');
-        perfLiveEl.textContent = 'Exported ' + runs.length + ' runs to CSV.';
+        var csv = lines.join('\n') + '\n';
+        var ok = downloadTextFile('webxr_hololens_perf_runs_' + stamp + '.csv', csv);
+        if (ok) {
+          perfLiveEl.textContent = 'Exported ' + runs.length + ' runs to CSV.';
+          return;
+        }
+        copyText(csv).then(function(copied) {
+          if (copied) perfLiveEl.textContent = 'Download blocked. CSV copied to clipboard.';
+          else perfLiveEl.textContent = 'Download blocked. Copy from console: window.__holoassistPerfCsv';
+        });
+        if (typeof window !== 'undefined') window.__holoassistPerfCsv = csv;
       }
 
-      perfStartBtn.addEventListener('click', function() {
+      bindPress(perfStartBtn, function() {
         startPerfRun();
       });
-      perfStopBtn.addEventListener('click', function() {
+      bindPress(perfStopBtn, function() {
         stopPerfRun();
       });
-      perfExportLastBtn.addEventListener('click', async function() {
+      bindPress(perfExportLastBtn, async function() {
         var r = perfState.lastResult;
         if (!r) {
           perfLiveEl.textContent = 'No completed run yet.';
           return;
         }
         var ok = await copyText(toCsvRow(r));
-        perfLiveEl.textContent = ok ? 'Last CSV row copied.' : 'Copy failed. Use Download All Runs CSV.';
+        if (ok) {
+          perfLiveEl.textContent = 'Last CSV row copied.';
+          return;
+        }
+        if (typeof window !== 'undefined') window.__holoassistPerfLastCsv = toCsvRow(r);
+        perfLiveEl.textContent = 'Copy blocked. Use Download All Runs CSV or console variable __holoassistPerfLastCsv.';
       });
-      perfExportAllBtn.addEventListener('click', function() {
+      bindPress(perfExportAllBtn, function() {
         exportAllPerfRuns();
       });
-      perfClearBtn.addEventListener('click', function() {
+      bindPress(perfClearBtn, function() {
         savePerfRuns([]);
         perfState.lastResult = null;
         perfLastEl.textContent = '';
@@ -578,6 +706,14 @@
       var localItalianRec = null;
       var localItalianModeActive = false;
       function getCurrentAsrUrl() { return ASR_URL_EN; }
+      function shortUrl(url) {
+        try {
+          var u = new URL(String(url || ''));
+          return u.origin + u.pathname;
+        } catch (_) {
+          return String(url || '');
+        }
+      }
       function getSpeechRecognitionCtor() {
         if (typeof window === 'undefined') return null;
         return window.SpeechRecognition || window.webkitSpeechRecognition || null;
@@ -741,6 +877,7 @@
           if (reqId !== translateRequestToken) return text;
           if (!res.ok) {
             console.warn('[NMT] HTTP', res.status);
+            setStatus((getCaptionDisplayText() || text || '') + '\nTranslation API failed (' + res.status + ') at ' + shortUrl(NMT_URL));
             return text;
           }
           var data = await res.json();
@@ -757,6 +894,7 @@
         } catch (e) {
           if (e && (e.name === 'AbortError' || e.code === 20)) return text;
           console.warn('[NMT] translate failed:', e);
+          setStatus((getCaptionDisplayText() || text || '') + '\nTranslation request failed at ' + shortUrl(NMT_URL));
           return text;
         } finally {
           if (nmtAbortController === ctrl) nmtAbortController = null;
@@ -823,7 +961,7 @@
             priority: 'high'
           });
           if (!res.ok) {
-            if (asrRunning) setStatus('ASR request failed — speak again.');
+            if (asrRunning) setStatus('ASR API failed (' + res.status + ') at ' + shortUrl(getCurrentAsrUrl()));
             return;
           }
           if (isFirstTrip) asrFirstApiRoundTripDone = true;
@@ -860,7 +998,7 @@
           if (translationOn) scheduleTranslation();
         } catch (e) {
           console.warn('[ASR] failed:', e);
-          if (asrRunning && isFirstTrip) setStatus('Connection failed — check network.');
+          if (asrRunning && isFirstTrip) setStatus('ASR connection failed at ' + shortUrl(getCurrentAsrUrl()) + '.');
         } finally {
           isSending = false;
           if (asrFlushPending && asrRunning) {
@@ -871,6 +1009,7 @@
         }
       }
       async function startAsr() {
+        await ensureMediaPermission({ audio: true }, 'ASR');
         if (asrItalianToEnglishOn) {
           asrRunning = true;
           btnAsr.textContent = 'Stop ASR . On';
@@ -974,7 +1113,7 @@
         setTranslationButtonVisibility();
         setStatus('Ready.');
       }
-      btnAsr.addEventListener('click', async function() {
+      bindPress(btnAsr, async function() {
         try {
           if (asrRunning) {
             await stopAsr();
@@ -985,11 +1124,33 @@
         }
         catch (e) { console.error(e); await stopAsr(); setStatus('ASR start failed.'); }
       });
+      bindPress(btnItaAsr, async function() {
+        if (signRunning) return;
+        var nextItalianMode = !asrItalianToEnglishOn;
+        if (asrRunning) {
+          try {
+            await stopAsr();
+            asrItalianToEnglishOn = nextItalianMode;
+            refreshItalianAsrButtonUI();
+            await startAsr();
+          } catch (e) {
+            console.error(e);
+            asrItalianToEnglishOn = false;
+            refreshItalianAsrButtonUI();
+            setStatus('Could not switch ASR mode.');
+          }
+          return;
+        }
+        asrItalianToEnglishOn = nextItalianMode;
+        refreshItalianAsrButtonUI();
+        setStatus(asrItalianToEnglishOn ? 'Italian caption mode armed. Press Start ASR.' : 'English caption mode armed. Press Start ASR.');
+      });
 
       // Sign Language — MediaPipe in-browser; infer only when hand is large & confident enough.
       // Aligns with API defaults: stable_frames 6, min_conf 0.65, noise_frames 4, pause_ms 450, word_pause_ms 1800.
-      var SIGN_API_BASE = 'http://127.0.0.1:8000';
-      var SIGN_INFER_URL = SIGN_API_BASE.replace(/\/+$/, '') + '/infer';
+      var SIGN_API_BASE = (typeof window !== 'undefined' && window.HOLOASSIST_SIGN_API_BASE) || 'https://mederbekaiana-sign-language.hf.space';
+      var SIGN_INFER_URL = (typeof window !== 'undefined' && window.HOLOASSIST_SIGN_API_URL) || (SIGN_API_BASE.replace(/\/+$/, '') + '/predict');
+      var SIGN_INFER_FALLBACK_URL = SIGN_API_BASE.replace(/\/+$/, '') + '/infer';
       var SIGN_INFER_INTERVAL_MS = 154;
       var SIGN_MIN_HAND_AREA_FRAC = 0.05;
       var SIGN_MIN_HANDEDNESS_SCORE = 0.65;
@@ -1088,9 +1249,15 @@
           var nt = String(data.text).trim();
           if (!signLastHistory || nt.length >= signLastHistory.length) signLastHistory = nt;
         }
-        var letter = data.letter != null && String(data.letter).trim() !== '' ? String(data.letter).trim() : '';
+        var letterRaw = data.letter != null ? String(data.letter).trim() : '';
+        var predictedRaw = data.predicted_letter != null ? String(data.predicted_letter).trim() : '';
+        var candidateRaw = data.candidate_letter != null ? String(data.candidate_letter).trim() : '';
+        var letter = letterRaw || predictedRaw;
+        if (letter.toUpperCase() === 'NONE') letter = candidateRaw || '';
         var conf = typeof data.confidence === 'number' ? data.confidence : null;
         var hint = data.status_hint != null ? String(data.status_hint).trim() : '';
+        if (!hint && data.detail != null) hint = String(data.detail).trim();
+        if (!hint && data.state != null) hint = String(data.state).trim();
         var bottom;
         if (letter) {
           bottom = 'Letter: ' + letter + (conf != null ? ' — ' + formatSignConfidence(conf) : '');
@@ -1194,28 +1361,52 @@
           signCtx.drawImage(signVideo, crop.sx, crop.sy, crop.side, crop.side, 0, 0, 224, 224);
           var blob = await new Promise(function(resolve) { signCanvas.toBlob(resolve, 'image/jpeg', 0.88); });
           if (!blob) return;
+          var data = null;
           var form = new FormData();
           form.append('image', blob, 'frame.jpg');
           form.append('spell', 'true');
           form.append('session_id', 'web-sign-session-' + String(currentToken));
+
+          // Browser-first path: multipart to /predict (avoids CORS preflight from image/jpeg).
           var res = await fetch(SIGN_INFER_URL, { method: 'POST', body: form });
-          if (!res.ok) {
-            if (signLastServerPayload) renderSignCaption(signLastServerPayload);
-            return;
+          if (res.ok) {
+            data = await res.json();
+          } else {
+            // Unity-aligned fallback: raw JPEG to /predict.
+            var resRaw = await fetch(SIGN_INFER_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'image/jpeg' },
+              body: blob
+            });
+            if (resRaw.ok) {
+              data = await resRaw.json();
+            } else {
+              // Legacy endpoint fallback: multipart to /infer.
+              var res2 = await fetch(SIGN_INFER_FALLBACK_URL, { method: 'POST', body: form });
+              if (!res2.ok) {
+                if (signRunning) {
+                  setStatus('Sign API failed: /predict(form)=' + res.status + ', /predict(raw)=' + resRaw.status + ', /infer=' + res2.status);
+                }
+                if (signLastServerPayload) renderSignCaption(signLastServerPayload);
+                return;
+              }
+              data = await res2.json();
+            }
           }
-          var data = await res.json();
           if (!signRunning || currentToken !== signRunToken) return;
           if (!signFirstApiRoundTripDone) signFirstApiRoundTripDone = true;
           hasReceivedSignResult = true;
           renderSignCaption(data);
         } catch (e) {
           console.warn('[Sign] infer failed:', e);
+          if (signRunning) setStatus('Sign request failed at ' + shortUrl(SIGN_API_BASE));
           if (signLastServerPayload) renderSignCaption(signLastServerPayload);
         } finally {
           signInferBusy = false;
         }
       }
       async function startSign() {
+        await ensureMediaPermission({ video: true, audio: false }, 'Sign Language');
         signRunToken += 1;
         lastSignText = '';
         signLastHistory = '';
@@ -1285,7 +1476,7 @@
         signCropSmooth = null;
         setStatus('Ready.');
       }
-      btnSign.addEventListener('click', async function() {
+      bindPress(btnSign, async function() {
         try {
           if (signRunning) {
             stopSign();
@@ -1300,23 +1491,9 @@
       // Settings button -> translation toggle
       btnSettings.classList.add('translation');
       refreshSettingsButtonUI();
+      refreshItalianAsrButtonUI();
       setTranslationButtonVisibility();
-      btnSettings.addEventListener('click', async function() {
-        if (!asrRunning && !signRunning) return;
-        if (asrRunning) {
-          var nextItalianMode = !asrItalianToEnglishOn;
-          try {
-            await stopAsr();
-            asrItalianToEnglishOn = nextItalianMode;
-            await startAsr();
-          } catch (e) {
-            console.error(e);
-            asrItalianToEnglishOn = false;
-            refreshSettingsButtonUI();
-            setStatus('Could not switch ASR mode.');
-          }
-          return;
-        }
+      bindPress(btnSettings, async function() {
         translationOn = !translationOn;
         if (!translationOn) {
           translateRequestToken += 1;
@@ -1324,13 +1501,17 @@
         }
         refreshSettingsButtonUI();
         if (translationOn) {
-          requestTranslationNow();
+          if (asrRunning || signRunning) {
+            requestTranslationNow();
+          } else {
+            setStatus('Language translation is ON. Start ASR or Sign to translate.');
+          }
         } else {
           setStatus(getCaptionDisplayText() || 'Ready.');
         }
       });
 
-      document.getElementById('btn-clear-caption').addEventListener('click', function() {
+      bindPress(document.getElementById('btn-clear-caption'), function() {
         translateRequestToken += 1;
         abortPendingTranslation();
         fullTranscript = '';
@@ -1351,6 +1532,20 @@
         statusUpdateCount += 1;
         originalSetStatus(t);
       };
+      // Auto-start perf capture immediately on page open (user can still stop manually).
+      startPerfRun();
+      console.info('[API config]', {
+        asr: ASR_URL_EN,
+        asrItEn: ASR_URL_IT_EN,
+        nmt: NMT_URL,
+        signPredict: SIGN_INFER_URL,
+        signFallback: SIGN_INFER_FALLBACK_URL
+      });
+      if (!supportsMediaDevices()) {
+        setStatus('This browser does not expose media permissions (camera/mic APIs unavailable).');
+      } else if (!hasSecureMediaContext()) {
+        setStatus('Open this page via HTTPS (or localhost) to enable ASR and Sign camera.');
+      }
     })();
   </script>
 </body>
