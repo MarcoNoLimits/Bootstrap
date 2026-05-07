@@ -76,6 +76,8 @@ public class SignInferenceClient : MonoBehaviour
 
     private static string DebugLogPath =>
         Path.Combine(Application.persistentDataPath, "debug-729dee.log");
+    private static string TimingLogPath =>
+        Path.Combine(Application.persistentDataPath, "sign_timing.log");
     [Header("API")]
     [Tooltip("If true, Awake sets the Hugging Face Space runtime URL for this platform. Turn off to use baseUrl from the inspector.")]
     [SerializeField] private bool usePlatformDefaultApiUrl = true;
@@ -245,6 +247,8 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private bool saveFirstSentFrames = true;
     [Tooltip("How many sent inference frames to save for visual inspection.")]
     [SerializeField] private int saveFirstSentFramesCount = 80;
+    [Tooltip("Write per-request timing lines to LocalState/sign_timing.log for Device Portal download.")]
+    [SerializeField] private bool writeTimingLogFile = true;
 
     private WebCamTexture _webCamTexture;
     private Coroutine _webCamBootstrapCo;
@@ -415,6 +419,11 @@ public class SignInferenceClient : MonoBehaviour
             ApplyLatencyTestProfile();
         }
 
+        Debug.Log(
+            $"[SignInferenceClient] Runtime config: combinedABMode={combinedABMode} strictLowLatencyMode={strictLowLatencyMode} " +
+            $"enableLatencyTestProfile={enableLatencyTestProfile} maxSendFrameWidth={maxSendFrameWidth} jpegQuality={jpegQuality} " +
+            $"useXrCpuImagePipeline={useXrCpuImagePipeline} forceRawJpegEndpointOnHoloLens={forceRawJpegEndpointOnHoloLens}");
+
 #if UNITY_WSA && !UNITY_EDITOR
         ApplyHoloLensWebCamPvOverride();
 
@@ -480,6 +489,19 @@ public class SignInferenceClient : MonoBehaviour
         _roiTexture = new Texture2D(targetSize, targetSize, TextureFormat.RGB24, false);
         _debugFrameDir = Path.Combine(Application.persistentDataPath, "sign_debug");
         _sentFramesDir = ResolveSentFramesDirectory();
+        if (writeTimingLogFile)
+        {
+            try
+            {
+                File.AppendAllText(
+                    TimingLogPath,
+                    $"# session_start_utc={DateTime.UtcNow:O} app={Application.productName}\n");
+            }
+            catch
+            {
+                // Best-effort logging only.
+            }
+        }
     }
 
     private void ApplyCombinedAbDefaults()
@@ -493,7 +515,7 @@ public class SignInferenceClient : MonoBehaviour
         requestFps = 7f;
         dropIfRequestInFlight = true;
         jpegQuality = 88;
-        maxSendFrameWidth = 480;
+        maxSendFrameWidth = 640;
         inferEndpointPath = "/predict";
         confidenceThreshold = 0.55f;
         minTop2Margin = 0.12f;
@@ -695,6 +717,9 @@ public class SignInferenceClient : MonoBehaviour
                     cpuPipelineCenterCropFraction,
                     jpegQuality,
                     true);
+                Debug.Log(
+                    $"[SignInferenceClient] PV encoder configured: maxOutputWidth={maxSendFrameWidth} " +
+                    $"cropCenter={cpuPipelineCropCenter} cropFraction={cpuPipelineCenterCropFraction:0.00} jpegQuality={jpegQuality}");
             }
             else
             {
@@ -1409,11 +1434,11 @@ public class SignInferenceClient : MonoBehaviour
         }
         if (isHfSpace)
         {
-            StartCoroutine(PostInfer(jpegBytes));
+            StartCoroutine(PostInfer(jpegBytes, captureStartedAt, jpegReadyAt));
             return;
         }
 
-        StartCoroutine(PostInfer(jpegBytes));
+        StartCoroutine(PostInfer(jpegBytes, captureStartedAt, jpegReadyAt));
     }
 
     private void MaybeLogHandRoiStats(byte[] jpegBytes)
@@ -1814,6 +1839,15 @@ public class SignInferenceClient : MonoBehaviour
                     Debug.Log(
                         $"[SignInferenceClient][cpu-pipe] req={requestId} jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} http=FAIL detection=n/a");
                 }
+                LogPerRequestTiming(
+                    requestId,
+                    captureStartedAt,
+                    requestSentAt,
+                    responseAt,
+                    responseAt,
+                    prediction: "",
+                    confidence: -1f,
+                    parseOk: false);
                 MaybeLogCpuPipelineSummary();
             }
             else
@@ -1844,6 +1878,15 @@ public class SignInferenceClient : MonoBehaviour
                         Debug.LogWarning(
                             $"[SignInferenceClient][cpu-pipe] req={requestId} jpegBytes={jpegLen} roundTripMs={roundTripMs:0.0} serverProcMs={(serverProcMs.HasValue ? serverProcMs.Value.ToString("0.0", CultureInfo.InvariantCulture) : "n/a")} http=OK parse=FAIL");
                     }
+                    LogPerRequestTiming(
+                        requestId,
+                        captureStartedAt,
+                        requestSentAt,
+                        responseAt,
+                        responseAt,
+                        prediction: "",
+                        confidence: -1f,
+                        parseOk: false);
                     MaybeLogCpuPipelineSummary();
                 }
                 else
@@ -1875,6 +1918,15 @@ public class SignInferenceClient : MonoBehaviour
                     HandleInferResponse(response);
                     OnInferResponse?.Invoke(response);
                     float uiDoneAt = Time.realtimeSinceStartup;
+                    LogPerRequestTiming(
+                        requestId,
+                        captureStartedAt,
+                        requestSentAt,
+                        responseAt,
+                        uiDoneAt,
+                        prediction: response.letter ?? "",
+                        confidence: response.confidence,
+                        parseOk: true);
                     LogLatencyProbe(requestId, captureStartedAt, jpegReadyAt, requestSentAt, responseAt, uiDoneAt, jpegLen);
                     MaybeLogCpuPipelineSummary();
                 }
@@ -1904,6 +1956,52 @@ public class SignInferenceClient : MonoBehaviour
         float jpegKb = Mathf.Max(0f, jpegBytes) / 1024f;
         Debug.Log(
             $"[SignInferenceClient][latency] req={requestId} capture_ms={captureMs:0.0} jpeg_kb={jpegKb:0.0} network_api_ms={netMs:0.0} ui_ms={uiMs:0.0} total_ms={totalMs:0.0}");
+    }
+
+    /// <summary>
+    /// Per-request timeline for stale/mismatch diagnostics.
+    /// </summary>
+    private void LogPerRequestTiming(
+        string frameId,
+        float captureTime,
+        float sendTime,
+        float responseReceiveTime,
+        float displayTime,
+        string prediction,
+        float confidence,
+        bool parseOk)
+    {
+        float cap = Mathf.Max(0f, captureTime);
+        float snd = Mathf.Max(0f, sendTime);
+        float rsp = Mathf.Max(0f, responseReceiveTime);
+        float dsp = Mathf.Max(0f, displayTime);
+
+        float e2eMs = cap > 0f ? Mathf.Max(0f, (dsp - cap) * 1000f) : -1f;
+        float asyncLagMs = snd > 0f ? Mathf.Max(0f, (rsp - snd) * 1000f) : -1f;
+        bool stalePrediction = e2eMs >= 0f && e2eMs > 1400f;
+        bool responseMismatch = !parseOk;
+
+        Debug.Log(
+            $"[SignInferenceClient][timing] frame_id={frameId} " +
+            $"capture_time={cap:0.000} send_time={snd:0.000} response_receive_time={rsp:0.000} display_time={dsp:0.000} " +
+            $"prediction={(prediction ?? string.Empty)} confidence={confidence:0.000} " +
+            $"stale_prediction={(stalePrediction ? 1 : 0)} async_lag_ms={asyncLagMs:0.0} response_mismatch={(responseMismatch ? 1 : 0)}");
+        if (writeTimingLogFile)
+        {
+            try
+            {
+                File.AppendAllText(
+                    TimingLogPath,
+                    $"utc={DateTime.UtcNow:O} frame_id={frameId} " +
+                    $"capture_time={cap:0.000} send_time={snd:0.000} response_receive_time={rsp:0.000} display_time={dsp:0.000} " +
+                    $"prediction={(prediction ?? string.Empty)} confidence={confidence:0.000} " +
+                    $"stale_prediction={(stalePrediction ? 1 : 0)} async_lag_ms={asyncLagMs:0.0} response_mismatch={(responseMismatch ? 1 : 0)}\n");
+            }
+            catch
+            {
+                // Best-effort logging only.
+            }
+        }
     }
 
     private void RecordCpuPipelineHttpFailure(int jpegBytes, double roundTripMs)
@@ -2011,10 +2109,11 @@ public class SignInferenceClient : MonoBehaviour
         _cpuPipeSummaryWindowStartRt = nowRt;
     }
 
-    private IEnumerator PostInfer(byte[] jpegBytes)
+    private IEnumerator PostInfer(byte[] jpegBytes, float captureStartedAt = -1f, float jpegReadyAt = -1f)
     {
         _requestInFlight = true;
         float startedAt = Time.realtimeSinceStartup;
+        float requestSentAt = startedAt;
         string requestId = "sign-" + System.Threading.Interlocked.Increment(ref _requestSequence).ToString("D5");
 
         string callUrl = TrimTrailingSlash(baseUrl) + "/gradio_api/call/predict";
@@ -2045,6 +2144,7 @@ public class SignInferenceClient : MonoBehaviour
             try
             {
                 op = req.SendWebRequest();
+                requestSentAt = Time.realtimeSinceStartup;
             }
             catch (InvalidOperationException ex)
             {
@@ -2053,6 +2153,7 @@ public class SignInferenceClient : MonoBehaviour
                     ex.Message;
                 Debug.LogError("[SignInferenceClient] " + requestId + " " + err);
                 OnNetworkError?.Invoke(err);
+                LogPerRequestTiming(requestId, captureStartedAt, requestSentAt, Time.realtimeSinceStartup, Time.realtimeSinceStartup, "", -1f, false);
                 _requestInFlight = false;
                 yield break;
             }
@@ -2065,6 +2166,7 @@ public class SignInferenceClient : MonoBehaviour
                 yield break;
             }
 
+            float callResponseAt = Time.realtimeSinceStartup;
             if (req.result != UnityWebRequest.Result.Success)
             {
                 string err = $"{requestId} predict failed: {req.error}";
@@ -2081,6 +2183,7 @@ public class SignInferenceClient : MonoBehaviour
                     "{\"result\":\"" + req.result.ToString() + "\",\"error\":\"" + (req.error ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\",\"responseCode\":" + req.responseCode.ToString(CultureInfo.InvariantCulture) + "}");
                 #endregion
                 OnNetworkError?.Invoke(err);
+                LogPerRequestTiming(requestId, captureStartedAt, requestSentAt, callResponseAt, callResponseAt, "", -1f, false);
             }
             else
             {
@@ -2094,6 +2197,7 @@ public class SignInferenceClient : MonoBehaviour
                     float latencyMs = (Time.realtimeSinceStartup - startedAt) * 1000f;
                     Debug.LogWarning($"[SignInferenceClient] latencyMs={latencyMs:0} status=missing_event_id");
                     OnNetworkError?.Invoke(err);
+                    LogPerRequestTiming(requestId, captureStartedAt, requestSentAt, callResponseAt, callResponseAt, "", -1f, false);
                 }
                 else
                 {
@@ -2101,7 +2205,9 @@ public class SignInferenceClient : MonoBehaviour
                     using (UnityWebRequest streamReq = UnityWebRequest.Get(streamUrl))
                     {
                         streamReq.timeout = Mathf.RoundToInt(requestTimeoutSeconds);
+                        float streamSentAt = Time.realtimeSinceStartup;
                         yield return streamReq.SendWebRequest();
+                        float streamResponseAt = Time.realtimeSinceStartup;
 
                         if (streamReq.result != UnityWebRequest.Result.Success)
                         {
@@ -2112,6 +2218,7 @@ public class SignInferenceClient : MonoBehaviour
                             float latencyMs = (Time.realtimeSinceStartup - startedAt) * 1000f;
                             Debug.LogWarning($"[SignInferenceClient] latencyMs={latencyMs:0} status=stream_failed");
                             OnNetworkError?.Invoke(err);
+                            LogPerRequestTiming(requestId, captureStartedAt, streamSentAt, streamResponseAt, streamResponseAt, "", -1f, false);
                         }
                         else
                         {
@@ -2133,6 +2240,7 @@ public class SignInferenceClient : MonoBehaviour
                                     _lastNetworkError = parseErr;
                                     OnNetworkError?.Invoke(parseErr);
                                 }
+                                LogPerRequestTiming(requestId, captureStartedAt, streamSentAt, streamResponseAt, streamResponseAt, "", -1f, false);
                             }
                             else
                             {
@@ -2147,6 +2255,15 @@ public class SignInferenceClient : MonoBehaviour
 
                                 HandleInferResponse(response);
                                 OnInferResponse?.Invoke(response);
+                                LogPerRequestTiming(
+                                    requestId,
+                                    captureStartedAt,
+                                    streamSentAt,
+                                    streamResponseAt,
+                                    Time.realtimeSinceStartup,
+                                    response.letter ?? "",
+                                    response.confidence,
+                                    true);
                             }
                         }
                     }

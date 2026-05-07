@@ -36,6 +36,7 @@ public sealed class HybridVoiceManager : IDisposable
     private Coroutine _finalizeSentenceCo;
     private Coroutine _apiHealthWatchdogCo;
     private string _pendingTranslationText;
+    private string _pendingFinalTranslationText;
     private string _lastCommittedSentence;
     private float _lastCommittedAt = -999f;
     private string _lastHypothesisText;
@@ -124,8 +125,8 @@ public sealed class HybridVoiceManager : IDisposable
 
         EnsureAsrManager();
         HololensAsrManager.Instance.SetApiUrl(_primaryApiUrl);
-        HololensAsrManager.Instance.OnTextUpdated -= OnApiTextUpdated;
-        HololensAsrManager.Instance.OnTextUpdated += OnApiTextUpdated;
+        HololensAsrManager.Instance.OnTextUpdatedDetailed -= OnApiTextUpdatedDetailed;
+        HololensAsrManager.Instance.OnTextUpdatedDetailed += OnApiTextUpdatedDetailed;
         HololensAsrManager.Instance.OnApiRequestFinished -= OnApiRequestFinished;
         HololensAsrManager.Instance.OnApiRequestFinished += OnApiRequestFinished;
         HololensAsrManager.Instance.OnMicLevelUpdated -= OnMicLevelForBargeIn;
@@ -244,7 +245,7 @@ public sealed class HybridVoiceManager : IDisposable
         }
     }
 
-    private void OnApiTextUpdated(string text)
+    private void OnApiTextUpdatedDetailed(string text, bool isFinal)
     {
         if (!_usingApi || _disposed) return;
         MainThreadDispatcher.RunOnMainThread(() =>
@@ -265,13 +266,18 @@ public sealed class HybridVoiceManager : IDisposable
             _lastHypothesisAt = Time.realtimeSinceStartup;
             OnHypothesis?.Invoke(hypothesis);
             _pendingTranslationText = hypothesis;
+            if (isFinal)
+            {
+                _pendingFinalTranslationText = hypothesis;
+            }
             if (_finalizeSentenceCo != null)
             {
                 _host.StopCoroutine(_finalizeSentenceCo);
                 _finalizeSentenceCo = null;
             }
 
-            _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(_phraseEndSilenceSeconds));
+            float finalizeDelay = isFinal ? 0.08f : _phraseEndSilenceSeconds;
+            _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(finalizeDelay));
         });
     }
 
@@ -333,13 +339,20 @@ public sealed class HybridVoiceManager : IDisposable
         {
             var t = _pendingTranslationText;
             _pendingTranslationText = null;
+            var finalT = _pendingFinalTranslationText;
+            _pendingFinalTranslationText = null;
             string normalized = NormalizeTranscriptForDedupe(t ?? string.Empty);
+            string finalNormalized = NormalizeTranscriptForDedupe(finalT ?? string.Empty);
             string rolled = HololensAsrManager.Instance != null
                 ? NormalizeTranscriptForDedupe(HololensAsrManager.Instance.RollingTranscript ?? string.Empty)
                 : string.Empty;
 
-            // Prefer the richest candidate among pending, rolling, and very recent hypothesis.
-            string candidate = normalized;
+            // Prefer explicit final ASR updates first; otherwise pick the richest candidate.
+            string candidate = finalNormalized;
+            if (string.IsNullOrEmpty(candidate))
+            {
+                candidate = normalized;
+            }
             if (rolled.Length > candidate.Length)
             {
                 candidate = rolled;
@@ -400,7 +413,7 @@ public sealed class HybridVoiceManager : IDisposable
 
         if (HololensAsrManager.Instance != null)
         {
-            HololensAsrManager.Instance.OnTextUpdated -= OnApiTextUpdated;
+            HololensAsrManager.Instance.OnTextUpdatedDetailed -= OnApiTextUpdatedDetailed;
             HololensAsrManager.Instance.OnApiRequestFinished -= OnApiRequestFinished;
             HololensAsrManager.Instance.OnMicLevelUpdated -= OnMicLevelForBargeIn;
             HololensAsrManager.Instance.OnMicrophoneNotReady -= OnUnityMicNotReady;
@@ -486,7 +499,7 @@ public sealed class HybridVoiceManager : IDisposable
 
         if (HololensAsrManager.Instance != null)
         {
-            HololensAsrManager.Instance.OnTextUpdated -= OnApiTextUpdated;
+            HololensAsrManager.Instance.OnTextUpdatedDetailed -= OnApiTextUpdatedDetailed;
             HololensAsrManager.Instance.OnApiRequestFinished -= OnApiRequestFinished;
             HololensAsrManager.Instance.OnMicLevelUpdated -= OnMicLevelForBargeIn;
             HololensAsrManager.Instance.OnMicrophoneNotReady -= OnUnityMicNotReady;
