@@ -45,14 +45,14 @@ public class WizardOfOzClient : MonoBehaviour
     [SerializeField] private bool allowApiEmptyResponseFallback = false;
 
     [Tooltip("API-only: silence after last partial before phrase end (increase to reduce mid-sentence splits). Dictation fallback ignores this.")]
-    [SerializeField] private float asrPhraseEndSilenceSeconds = 2.2f;
+    [SerializeField] private float asrPhraseEndSilenceSeconds = 2.0f;
     [Tooltip("If true, API mode can auto-fallback when no transcript is received for too long while speaking. Keep false to avoid silence-triggered mode switches.")]
     [SerializeField] private bool allowApiSilenceAutoFallback = false;
     [Header("ASR Runtime Tuning")]
     [Tooltip("English API tuning: chunk length in seconds.")]
-    [SerializeField] private float englishAsrChunkSeconds = 1.8f;
+    [SerializeField] private float englishAsrChunkSeconds = 2.5f;
     [Tooltip("English API tuning: max send window in seconds.")]
-    [SerializeField] private float englishAsrSendWindowSeconds = 2.2f;
+    [SerializeField] private float englishAsrSendWindowSeconds = 3.5f;
     [Tooltip("English API tuning: skip sending chunks quieter than this RMS.")]
     [SerializeField] private float englishAsrMinChunkRms = 0.0065f;
     [Tooltip("English API tuning: adaptive gain target RMS.")]
@@ -62,9 +62,9 @@ public class WizardOfOzClient : MonoBehaviour
     [Tooltip("English mode: start with on-device dictation, and switch to API only if local dictation errors.")]
     [SerializeField] private bool preferLocalEnglishAsrWithApiFallback = false;
     [Tooltip("Italian API tuning: slightly longer chunk reduces empty-string responses on softer speech.")]
-    [SerializeField] private float italianAsrChunkSeconds = 1.8f;
+    [SerializeField] private float italianAsrChunkSeconds = 2.5f;
     [Tooltip("Italian API tuning: window length in seconds.")]
-    [SerializeField] private float italianAsrSendWindowSeconds = 2.2f;
+    [SerializeField] private float italianAsrSendWindowSeconds = 3.5f;
     [Tooltip("Italian API tuning: lower silence gate to avoid dropping soft speech.")]
     [SerializeField] private float italianAsrMinChunkRms = 0.0065f;
     [Tooltip("Italian API tuning: higher target RMS for clearer backend input.")]
@@ -92,9 +92,9 @@ public class WizardOfOzClient : MonoBehaviour
     [Tooltip("Throttle ASR partial-caption refreshes to avoid UI hitches while clicking buttons.")]
     [SerializeField] private float hypothesisUiUpdateMinIntervalSeconds = 0.14f;
     [Tooltip("After a sentence result, keep it visible for this long before showing 'Listening...' again.")]
-    [SerializeField] private float holdFinalCaptionSeconds = 3.8f;
+    [SerializeField] private float holdFinalCaptionSeconds = 1.0f;
     [Tooltip("After final text/translation is rendered, keep it readable before showing Listening again.")]
-    [SerializeField] private float holdAfterResultDisplaySeconds = 2.8f;
+    [SerializeField] private float holdAfterResultDisplaySeconds = 1.0f;
     [Tooltip("Top instruction shown when ASR is activated, then auto-hidden.")]
     [SerializeField] private string asrTopInstructionText = "Tip: A longer pause means end of sentence.";
     [Tooltip("How long to keep the ASR top instruction visible (seconds).")]
@@ -126,6 +126,8 @@ public class WizardOfOzClient : MonoBehaviour
     private string _lastHypothesisUiText = "";
     private float _lastSentenceCompletedAt = -999f;
     private float _suppressListeningUntil = -999f;
+    /// <summary>While true, do not switch subtitle to listening/hypothesis until NMT returns (or mode stops).</summary>
+    private bool _asrAwaitingTranslation;
     private Label _asrInstructionLabel;
     private Coroutine _asrInstructionCo;
     public bool IsItalianLocalAsrEnabled => _italianAsrModeEnabled;
@@ -302,22 +304,115 @@ public class WizardOfOzClient : MonoBehaviour
 
     private string ListeningPartialCaption(string partial)
     {
-        string prefix = _italianAsrModeEnabled ? "Listening for Italian ..." : "Listening for English ...";
-        return string.IsNullOrEmpty(partial)
-            ? prefix
-            : $"{prefix} {partial}";
+        return string.IsNullOrWhiteSpace(partial)
+            ? ListeningIdleCaption()
+            : partial.Trim();
     }
 
     private bool ShouldHoldFinalCaption()
     {
-        if (Time.time < _suppressListeningUntil) return true;
-        return Time.time - _lastSentenceCompletedAt < Mathf.Clamp(holdFinalCaptionSeconds, 0f, 8f);
+        return _asrAwaitingTranslation || Time.time < _suppressListeningUntil;
     }
 
     private void MarkFinalCaptionDisplayed()
     {
         _lastSentenceCompletedAt = Time.time;
-        _suppressListeningUntil = Time.time + Mathf.Clamp(holdAfterResultDisplaySeconds, 0f, 8f);
+        float hold = Mathf.Clamp(
+            Mathf.Min(holdFinalCaptionSeconds, holdAfterResultDisplaySeconds),
+            0f,
+            8f);
+        _suppressListeningUntil = Time.time + hold;
+    }
+
+    /// <summary>
+    /// Before returning to the idle listening caption, translate full merged ASR if it has not been sent to NMT yet.
+    /// </summary>
+    private void OfferListeningCaptionOrTranslatePendingAsr()
+    {
+        if (App.CurrentInputMode != App.InputMode.Asr || _uiManager == null || _voice == null)
+        {
+            return;
+        }
+
+        if (ShouldHoldFinalCaption())
+        {
+            return;
+        }
+
+        bool wantNmt = _italianAsrModeEnabled ? App.IsItalianTranslationEnabled : App.IsTranslationEnabled;
+        if (!wantNmt)
+        {
+            _uiManager.UpdateText(ListeningIdleCaption());
+            return;
+        }
+
+        if (!_voice.TryGetUntranslatedMergedAsrUtterance(out string src))
+        {
+            _uiManager.UpdateText(ListeningIdleCaption());
+            return;
+        }
+
+        _asrAwaitingTranslation = true;
+        _uiManager.UpdateText(src);
+        _lastHypothesisUiText = src;
+
+        if (_italianAsrModeEnabled)
+        {
+            _network.SendTranslationRequest(src, "ita_Latn", "eng_Latn", (resp) =>
+            {
+                string en = string.IsNullOrWhiteSpace(resp) ? src : resp.Trim();
+                MainThreadDispatcher.RunOnMainThread(() =>
+                {
+                    if (App.CurrentInputMode != App.InputMode.Asr)
+                    {
+                        return;
+                    }
+
+                    _asrAwaitingTranslation = false;
+                    _voice.NotifyTranslationSourceHandled(src);
+                    _uiManager.UpdateText(en);
+                    MarkFinalCaptionDisplayed();
+                });
+            });
+            return;
+        }
+
+        _network.SendTranslationRequest(src, (resp) =>
+        {
+            MainThreadDispatcher.RunOnMainThread(() =>
+            {
+                if (App.CurrentInputMode != App.InputMode.Asr)
+                {
+                    return;
+                }
+
+                _asrAwaitingTranslation = false;
+                _voice.NotifyTranslationSourceHandled(src);
+                string shown = string.IsNullOrWhiteSpace(resp) ? src : resp.Trim();
+                _uiManager.UpdateText(shown);
+                MarkFinalCaptionDisplayed();
+            });
+        });
+    }
+
+    /// <summary>
+    /// Call when only translation on/off changes while ASR stays active — keeps capture/voice alive (does not stop ASR).
+    /// </summary>
+    public void NotifyTranslationDisplayModeChanged()
+    {
+        if (App.CurrentInputMode != App.InputMode.Asr || !_asrActive)
+        {
+            return;
+        }
+
+        _listeningStallDeadline = Time.time + listeningStallSeconds;
+        if (_voice != null)
+        {
+            return;
+        }
+
+        EnsureManagersForVoice();
+        CreateAndStartVoiceManager();
     }
 
     private void WireEvents()
@@ -329,12 +424,14 @@ public class WizardOfOzClient : MonoBehaviour
             _listeningStallDeadline = Time.time + listeningStallSeconds;
             if (!ShouldHoldFinalCaption())
             {
-                _uiManager.UpdateText(ListeningIdleCaption());
+                OfferListeningCaptionOrTranslatePendingAsr();
             }
         });
 
         _voice.OnHypothesis += (partial) => MainThreadDispatcher.RunOnMainThread(() => {
             if (App.CurrentInputMode != App.InputMode.Asr) return;
+            if (ShouldHoldFinalCaption())
+                return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
             if (!string.IsNullOrEmpty(partial)) {
                 string caption = ListeningPartialCaption(partial);
@@ -353,40 +450,55 @@ public class WizardOfOzClient : MonoBehaviour
             _listeningStallDeadline = Time.time + listeningStallSeconds;
             if (!ShouldHoldFinalCaption())
             {
-                _uiManager.UpdateText(ListeningIdleCaption());
+                OfferListeningCaptionOrTranslatePendingAsr();
             }
         });
 
         _voice.OnSentenceCompleted += (text) => {
-            MainThreadDispatcher.RunOnMainThread(() => {
-                if (App.CurrentInputMode != App.InputMode.Asr) return;
-                _listeningStallDeadline = -1f;
-                _nextStallMessageAllowedTime = 0f;
-                if (_italianAsrModeEnabled || App.IsTranslationEnabled)
-                {
-                    return;
-                }
-
-                _uiManager.UpdateText(text);
-                MarkFinalCaptionDisplayed();
-            });
             if (App.CurrentInputMode != App.InputMode.Asr)
                 return;
 
+            MainThreadDispatcher.RunOnMainThread(() =>
+            {
+                if (App.CurrentInputMode != App.InputMode.Asr) return;
+                _listeningStallDeadline = -1f;
+                _nextStallMessageAllowedTime = 0f;
+            });
+
+            string trimmed = string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim();
+
             if (_italianAsrModeEnabled)
             {
-                string it = string.IsNullOrWhiteSpace(text) ? "..." : text.Trim();
+                string it = string.IsNullOrEmpty(trimmed) ? "..." : trimmed;
                 if (!App.IsItalianTranslationEnabled)
                 {
-                    MainThreadDispatcher.RunOnMainThread(() => {
+                    MainThreadDispatcher.RunOnMainThread(() =>
+                    {
+                        if (App.CurrentInputMode != App.InputMode.Asr) return;
+                        _asrAwaitingTranslation = false;
+                        _voice.NotifyTranslationSourceHandled(string.IsNullOrEmpty(trimmed) ? it : trimmed);
                         _uiManager.UpdateText(it);
                         MarkFinalCaptionDisplayed();
                     });
                     return;
                 }
-                _network.SendTranslationRequest(it, "ita_Latn", "eng_Latn", (resp) => {
+
+                MainThreadDispatcher.RunOnMainThread(() =>
+                {
+                    if (App.CurrentInputMode != App.InputMode.Asr) return;
+                    _asrAwaitingTranslation = true;
+                    _uiManager.UpdateText(it);
+                    _lastHypothesisUiText = it;
+                });
+
+                _network.SendTranslationRequest(it, "ita_Latn", "eng_Latn", (resp) =>
+                {
                     string en = string.IsNullOrWhiteSpace(resp) ? it : resp.Trim();
-                    MainThreadDispatcher.RunOnMainThread(() => {
+                    MainThreadDispatcher.RunOnMainThread(() =>
+                    {
+                        if (App.CurrentInputMode != App.InputMode.Asr) return;
+                        _asrAwaitingTranslation = false;
+                        _voice.NotifyTranslationSourceHandled(string.IsNullOrEmpty(trimmed) ? it : trimmed);
                         _uiManager.UpdateText(en);
                         MarkFinalCaptionDisplayed();
                     });
@@ -395,11 +507,35 @@ public class WizardOfOzClient : MonoBehaviour
             }
 
             if (!App.IsTranslationEnabled)
+            {
+                MainThreadDispatcher.RunOnMainThread(() =>
+                {
+                    if (App.CurrentInputMode != App.InputMode.Asr) return;
+                    _asrAwaitingTranslation = false;
+                    _voice.NotifyTranslationSourceHandled(trimmed);
+                    _uiManager.UpdateText(trimmed);
+                    MarkFinalCaptionDisplayed();
+                });
                 return;
+            }
 
-            _network.SendTranslationRequest(text, (resp) => {
-                MainThreadDispatcher.RunOnMainThread(() => {
-                    _uiManager.UpdateText(resp);
+            MainThreadDispatcher.RunOnMainThread(() =>
+            {
+                if (App.CurrentInputMode != App.InputMode.Asr) return;
+                _asrAwaitingTranslation = true;
+                _uiManager.UpdateText(trimmed);
+                _lastHypothesisUiText = trimmed;
+            });
+
+            _network.SendTranslationRequest(trimmed, (resp) =>
+            {
+                MainThreadDispatcher.RunOnMainThread(() =>
+                {
+                    if (App.CurrentInputMode != App.InputMode.Asr) return;
+                    _asrAwaitingTranslation = false;
+                    _voice.NotifyTranslationSourceHandled(trimmed);
+                    string shown = string.IsNullOrWhiteSpace(resp) ? trimmed : resp.Trim();
+                    _uiManager.UpdateText(shown);
                     MarkFinalCaptionDisplayed();
                 });
             });
@@ -563,6 +699,7 @@ public class WizardOfOzClient : MonoBehaviour
 
         if (!_italianAsrModeEnabled)
         {
+            _asrAwaitingTranslation = false;
             _uiManager?.UpdateText("");
         }
 
@@ -580,6 +717,8 @@ public class WizardOfOzClient : MonoBehaviour
     /// <summary>Clears subtitle caption (e.g. when switching to Sign or English ASR).</summary>
     public void ClearSubtitleCaption()
     {
+        _asrAwaitingTranslation = false;
+        HololensAsrManager.Instance?.ClearTranscriptContext("manual_reset");
         _uiManager?.UpdateText("");
     }
 
@@ -654,6 +793,7 @@ public class WizardOfOzClient : MonoBehaviour
 
         _listeningStallDeadline = -1f;
         _nextStallMessageAllowedTime = 0f;
+        _asrAwaitingTranslation = false;
         try
         {
             _voice?.Dispose();
@@ -719,6 +859,7 @@ public class WizardOfOzClient : MonoBehaviour
             && _listeningStallDeadline > 0f
             && Time.time >= _listeningStallDeadline
             && _uiManager != null
+            && !ShouldHoldFinalCaption()
             && !(HololensAsrManager.Instance != null && HololensAsrManager.Instance.IsApiRequestInFlight))
         {
             if (Time.time < _nextStallMessageAllowedTime)

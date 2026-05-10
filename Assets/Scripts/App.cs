@@ -460,6 +460,7 @@ public class App : MonoBehaviour
                 _translationToggleBtn.EnableInClassList("action-rail-btn-on", _translationOn);
                 // Translation toggle must never stop ASR capture.
                 SetAsrCaptureActive(_audioOn || _italianAsrOn);
+                WizardOfOzClient.Instance?.NotifyTranslationDisplayModeChanged();
             };
         }
 
@@ -476,6 +477,7 @@ public class App : MonoBehaviour
                 _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", _italianTranslationOn);
                 // Translation toggle must never stop ASR capture.
                 SetAsrCaptureActive(_audioOn || _italianAsrOn);
+                WizardOfOzClient.Instance?.NotifyTranslationDisplayModeChanged();
             };
         }
 

@@ -35,8 +35,11 @@ public sealed class HybridVoiceManager : IDisposable
 #endif
     private Coroutine _finalizeSentenceCo;
     private Coroutine _apiHealthWatchdogCo;
-    private string _pendingTranslationText;
-    private string _pendingFinalTranslationText;
+    /// <summary>Normalized ASR source text last handed to NMT (or shown raw when NMT off).</summary>
+    private string _lastTranslatedSourceSentence = string.Empty;
+    /// <summary>Current phrase caption buffer (not full conversation history). Mirrors overlap merge from <see cref="HololensAsrManager"/>.</summary>
+    private string _currentUtteranceTranscript = string.Empty;
+    private int _latestAcceptedApiChunkId;
     private string _lastCommittedSentence;
     private float _lastCommittedAt = -999f;
     private string _lastHypothesisText;
@@ -55,6 +58,42 @@ public sealed class HybridVoiceManager : IDisposable
     public Action<string> OnError;
     /// <summary>Fired when mic level crosses up (user likely speaking again). Clears Italian / idle text quickly.</summary>
     public Action OnSpeechBargeIn;
+
+    /// <summary>Record ASR source sentence after NMT completes (or raw path) so UI does not re-translate the same utterance.</summary>
+    public void NotifyTranslationSourceHandled(string sourceSentence)
+    {
+        _lastTranslatedSourceSentence = NormalizeTranscriptForDedupe(sourceSentence ?? string.Empty);
+    }
+
+    /// <summary>True when merged HoloLens caption differs from the last source sentence sent/handled for NMT.</summary>
+    public bool TryGetUntranslatedMergedAsrUtterance(out string sourceForNmt)
+    {
+        sourceForNmt = null;
+        if (!_usingApi || _disposed || HololensAsrManager.Instance == null)
+        {
+            return false;
+        }
+
+        string rolled = NormalizeTranscriptForDedupe(HololensAsrManager.Instance.CurrentUtteranceTranscript ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(rolled))
+        {
+            return false;
+        }
+
+        if (HololensAsrManager.Instance.UtteranceAwaitingAsrContinuation)
+        {
+            return false;
+        }
+
+        string lt = _lastTranslatedSourceSentence ?? string.Empty;
+        if (string.Equals(lt, rolled, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        sourceForNmt = rolled;
+        return true;
+    }
 
     public HybridVoiceManager(
         MonoBehaviour coroutineHost,
@@ -137,9 +176,13 @@ public sealed class HybridVoiceManager : IDisposable
         HololensAsrManager.Instance.OnMicrophoneReady += OnUnityMicReady;
         HololensAsrManager.Instance.OnRepeatedEmptySuccessfulApiResponses -= OnRepeatedEmptySuccessfulApiResponses;
         HololensAsrManager.Instance.OnRepeatedEmptySuccessfulApiResponses += OnRepeatedEmptySuccessfulApiResponses;
+        HololensAsrManager.Instance.OnUtteranceContextCleared -= OnHololensUtteranceContextCleared;
+        HololensAsrManager.Instance.OnUtteranceContextCleared += OnHololensUtteranceContextCleared;
 
         _usingApi = true;
         _consecutiveApiFailures = 0;
+        _currentUtteranceTranscript = string.Empty;
+        _latestAcceptedApiChunkId = 0;
         _micWasQuiet = true;
         _lastTranscriptAt = Time.realtimeSinceStartup;
         _lastSpeechAt = Time.realtimeSinceStartup - 999f;
@@ -220,6 +263,19 @@ public sealed class HybridVoiceManager : IDisposable
         }
     }
 
+    private void OnHololensUtteranceContextCleared(string reason)
+    {
+        if (!_usingApi || _disposed)
+        {
+            return;
+        }
+
+        _currentUtteranceTranscript = string.Empty;
+        _latestAcceptedApiChunkId = 0;
+        _lastHypothesisText = string.Empty;
+        _lastTranslatedSourceSentence = string.Empty;
+    }
+
     private void OnMicLevelForBargeIn(float level)
     {
         if (!_usingApi || _disposed) return;
@@ -232,7 +288,6 @@ public sealed class HybridVoiceManager : IDisposable
             _micWasQuiet = false;
             _lastSpeechAt = Time.realtimeSinceStartup;
             _lastBargeInAt = Time.realtimeSinceStartup;
-            HololensAsrManager.Instance?.ClearTranscriptContext();
             MainThreadDispatcher.RunOnMainThread(() => OnSpeechBargeIn?.Invoke());
         }
         else if (level >= loud)
@@ -250,9 +305,29 @@ public sealed class HybridVoiceManager : IDisposable
         if (!_usingApi || _disposed) return;
         MainThreadDispatcher.RunOnMainThread(() =>
         {
-            if (string.IsNullOrEmpty(text)) return;
+            if (string.IsNullOrWhiteSpace(text)) return;
+            int chunkId = HololensAsrManager.Instance != null
+                ? HololensAsrManager.Instance.LatestAcceptedChunkId
+                : 0;
+
             _lastTranscriptAt = Time.realtimeSinceStartup;
-            string hypothesis = NormalizeTranscriptForDedupe(text);
+            // HololensAsrManager already overlap-merges chunks into one current-utterance string — use it as source of truth (avoid double-merge tail-only bugs).
+            string newText = NormalizeTranscriptForDedupe(text);
+            if (string.IsNullOrWhiteSpace(newText))
+            {
+                return;
+            }
+
+            if (chunkId > 0)
+            {
+                _latestAcceptedApiChunkId = Mathf.Max(_latestAcceptedApiChunkId, chunkId);
+            }
+
+            string oldUtterance = _currentUtteranceTranscript;
+            _currentUtteranceTranscript = newText;
+            LogAsrPipelineHybrid(
+                $"[ASR MERGE] old='{EscapeQuotesForAsrLog(oldUtterance)}' new='{EscapeQuotesForAsrLog(newText)}' merged='{EscapeQuotesForAsrLog(_currentUtteranceTranscript)}'");
+            string hypothesis = NormalizeTranscriptForDedupe(_currentUtteranceTranscript);
             if (string.IsNullOrEmpty(hypothesis))
             {
                 return;
@@ -264,12 +339,8 @@ public sealed class HybridVoiceManager : IDisposable
             }
             _lastHypothesisText = hypothesis;
             _lastHypothesisAt = Time.realtimeSinceStartup;
+            LogAsrPipelineHybrid($"[ASR DISPLAY] text='{EscapeQuotesForAsrLog(hypothesis)}'");
             OnHypothesis?.Invoke(hypothesis);
-            _pendingTranslationText = hypothesis;
-            if (isFinal)
-            {
-                _pendingFinalTranslationText = hypothesis;
-            }
             if (_finalizeSentenceCo != null)
             {
                 _host.StopCoroutine(_finalizeSentenceCo);
@@ -320,6 +391,18 @@ public sealed class HybridVoiceManager : IDisposable
         var asr = HololensAsrManager.Instance;
         if (asr != null)
         {
+            if (asr.UtteranceAwaitingAsrContinuation)
+            {
+                _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(0.45f));
+                yield break;
+            }
+
+            if (asr.ShouldDeferSentenceGapDueToPipelineOrBuffer())
+            {
+                _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(0.55f));
+                yield break;
+            }
+
             // Don't finalize while a chunk is still being decoded remotely.
             if (asr.IsApiRequestInFlight)
             {
@@ -335,52 +418,21 @@ public sealed class HybridVoiceManager : IDisposable
             }
         }
 
-        if (!string.IsNullOrEmpty(_pendingTranslationText) || HololensAsrManager.Instance != null)
+        string rolled = asr != null
+            ? NormalizeTranscriptForDedupe(asr.CurrentUtteranceTranscript ?? string.Empty)
+            : string.Empty;
+        if (string.IsNullOrWhiteSpace(rolled))
         {
-            var t = _pendingTranslationText;
-            _pendingTranslationText = null;
-            var finalT = _pendingFinalTranslationText;
-            _pendingFinalTranslationText = null;
-            string normalized = NormalizeTranscriptForDedupe(t ?? string.Empty);
-            string finalNormalized = NormalizeTranscriptForDedupe(finalT ?? string.Empty);
-            string rolled = HololensAsrManager.Instance != null
-                ? NormalizeTranscriptForDedupe(HololensAsrManager.Instance.RollingTranscript ?? string.Empty)
-                : string.Empty;
+            yield break;
+        }
 
-            // Prefer explicit final ASR updates first; otherwise pick the richest candidate.
-            string candidate = finalNormalized;
-            if (string.IsNullOrEmpty(candidate))
-            {
-                candidate = normalized;
-            }
-            if (rolled.Length > candidate.Length)
-            {
-                candidate = rolled;
-            }
-
-            bool hasRecentHypothesis = Time.realtimeSinceStartup - _lastHypothesisAt <= 2.5f;
-            if (hasRecentHypothesis && !string.IsNullOrWhiteSpace(_lastHypothesisText))
-            {
-                string recentHyp = NormalizeTranscriptForDedupe(_lastHypothesisText);
-                if (recentHyp.Length > candidate.Length)
-                {
-                    candidate = recentHyp;
-                }
-            }
-
-            if (!string.IsNullOrEmpty(candidate))
-            {
-                // Only skip exact repeats. The old prefix+length<=+4 rule dropped valid extensions like "... ARE YOU" vs "... ARE YOU TODAY"
-                // within 1.2s, so those words never reached translation.
-                bool duplicate = string.Equals(_lastCommittedSentence, candidate, StringComparison.OrdinalIgnoreCase);
-                if (!duplicate)
-                {
-                    _lastCommittedSentence = candidate;
-                    _lastCommittedAt = Time.realtimeSinceStartup;
-                    OnSentenceCompleted?.Invoke(candidate);
-                }
-            }
-            HololensAsrManager.Instance?.ClearTranscriptContext();
+        string candidate = rolled;
+        bool duplicate = string.Equals(_lastCommittedSentence, candidate, StringComparison.OrdinalIgnoreCase);
+        if (!duplicate)
+        {
+            _lastCommittedSentence = candidate;
+            _lastCommittedAt = Time.realtimeSinceStartup;
+            OnSentenceCompleted?.Invoke(candidate);
         }
     }
 
@@ -394,6 +446,24 @@ public sealed class HybridVoiceManager : IDisposable
         string normalized = Regex.Replace(text.Trim(), "\\s+", " ");
         normalized = Regex.Replace(normalized, "\\b(\\w+)(\\s+\\1\\b){1,}", "$1", RegexOptions.IgnoreCase);
         return normalized.Trim(' ', '.', ',', ';', ':');
+    }
+
+    private static string EscapeQuotesForAsrLog(string s, int maxLen = 200)
+    {
+        if (string.IsNullOrEmpty(s))
+        {
+            return "";
+        }
+
+        string t = s.Replace("\\", "\\\\").Replace("\r", " ").Replace("\n", " ").Replace("'", "\\'");
+        return t.Length > maxLen ? t.Substring(0, maxLen) + "…" : t;
+    }
+
+    /// <summary>Mirrors <see cref="HololensAsrManager"/> pipeline logs — twin lines so Device Portal grep finds either prefix.</summary>
+    private static void LogAsrPipelineHybrid(string line)
+    {
+        Debug.Log(line);
+        Debug.Log("[ASR] " + line);
     }
 
     private void SwitchToDictationFallback()
@@ -410,7 +480,6 @@ public sealed class HybridVoiceManager : IDisposable
             _host.StopCoroutine(_apiHealthWatchdogCo);
             _apiHealthWatchdogCo = null;
         }
-
         if (HololensAsrManager.Instance != null)
         {
             HololensAsrManager.Instance.OnTextUpdatedDetailed -= OnApiTextUpdatedDetailed;
@@ -419,9 +488,12 @@ public sealed class HybridVoiceManager : IDisposable
             HololensAsrManager.Instance.OnMicrophoneNotReady -= OnUnityMicNotReady;
             HololensAsrManager.Instance.OnMicrophoneReady -= OnUnityMicReady;
             HololensAsrManager.Instance.OnRepeatedEmptySuccessfulApiResponses -= OnRepeatedEmptySuccessfulApiResponses;
+            HololensAsrManager.Instance.OnUtteranceContextCleared -= OnHololensUtteranceContextCleared;
             HololensAsrManager.Instance.StopAsr();
         }
 
+        _currentUtteranceTranscript = string.Empty;
+        _latestAcceptedApiChunkId = 0;
         StartDictationOnly();
     }
 
@@ -496,7 +568,6 @@ public sealed class HybridVoiceManager : IDisposable
             _host.StopCoroutine(_apiHealthWatchdogCo);
             _apiHealthWatchdogCo = null;
         }
-
         if (HololensAsrManager.Instance != null)
         {
             HololensAsrManager.Instance.OnTextUpdatedDetailed -= OnApiTextUpdatedDetailed;
@@ -505,9 +576,12 @@ public sealed class HybridVoiceManager : IDisposable
             HololensAsrManager.Instance.OnMicrophoneNotReady -= OnUnityMicNotReady;
             HololensAsrManager.Instance.OnMicrophoneReady -= OnUnityMicReady;
             HololensAsrManager.Instance.OnRepeatedEmptySuccessfulApiResponses -= OnRepeatedEmptySuccessfulApiResponses;
+            HololensAsrManager.Instance.OnUtteranceContextCleared -= OnHololensUtteranceContextCleared;
             HololensAsrManager.Instance.StopAsr();
         }
 
+        _currentUtteranceTranscript = string.Empty;
+        _latestAcceptedApiChunkId = 0;
 #if UNITY_WSA && !UNITY_EDITOR
         _italianWinRt?.Dispose();
         _italianWinRt = null;

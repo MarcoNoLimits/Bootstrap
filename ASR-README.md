@@ -22,6 +22,7 @@ Use this section when configuring Cursor, apps, or scripts to call the Space.
 - `GET /info` → service metadata (model ids, contract)
 - `GET /health` → health check
 - `POST /audio` → speech-to-text inference
+- `POST /client_log` → optional HoloLens pipeline telemetry (compact `[client] …` lines on stdout); set **`DEBUG_CLIENT_LOG_VERBOSE=1`** on the Space for full JSON. Register via `client_log_route.register_client_log_route` — see `ASR-API-Space/README_CLIENT_LOG.md`
 
 ### `POST /audio` input
 
