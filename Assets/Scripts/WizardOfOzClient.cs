@@ -128,6 +128,13 @@ public class WizardOfOzClient : MonoBehaviour
     private float _suppressListeningUntil = -999f;
     /// <summary>While true, do not switch subtitle to listening/hypothesis until NMT returns (or mode stops).</summary>
     private bool _asrAwaitingTranslation;
+    /// <summary>Serialized finalized ASR line currently sent to NMT (snapshot; ASR buffer may change).</summary>
+    private string _finalizedSentenceForTranslationInFlight;
+    private readonly Queue<string> _pendingTranslations = new Queue<string>(8);
+    private bool _nmtInFlight;
+    /// <summary>Source sentence last completed through NMT (trimmed, ordinal equality for dedupe).</summary>
+    private string _lastTranslatedSentence = string.Empty;
+    private Coroutine _resumeListeningCaptionCo;
     private Label _asrInstructionLabel;
     private Coroutine _asrInstructionCo;
     public bool IsItalianLocalAsrEnabled => _italianAsrModeEnabled;
@@ -311,7 +318,164 @@ public class WizardOfOzClient : MonoBehaviour
 
     private bool ShouldHoldFinalCaption()
     {
-        return _asrAwaitingTranslation || Time.time < _suppressListeningUntil;
+        return _asrAwaitingTranslation
+            || _nmtInFlight
+            || _pendingTranslations.Count > 0
+            || Time.time < _suppressListeningUntil;
+    }
+
+    private static string TranslatingCaptionStatic() => "Translating...";
+
+    private void CancelResumeListeningCaptionCoroutine()
+    {
+        if (_resumeListeningCaptionCo != null)
+        {
+            StopCoroutine(_resumeListeningCaptionCo);
+            _resumeListeningCaptionCo = null;
+        }
+    }
+
+    /// <summary>
+    /// Queue a full finalized ASR utterance for NMT. Does not read live ASR buffers after enqueue.
+    /// </summary>
+    private void EnqueueFinalizedSentenceForTranslation(string finalizedUtterance)
+    {
+        if (_uiManager == null || _voice == null || _network == null)
+        {
+            return;
+        }
+
+        string immutable = (finalizedUtterance ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(immutable))
+        {
+            return;
+        }
+
+        if (string.Equals(immutable, _lastTranslatedSentence, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _pendingTranslations.Enqueue(immutable);
+        TryStartNextTranslation();
+    }
+
+    private void TryStartNextTranslation()
+    {
+        if (_nmtInFlight || _network == null || _uiManager == null || _voice == null)
+        {
+            return;
+        }
+
+        if (_pendingTranslations.Count == 0)
+        {
+            return;
+        }
+
+        CancelResumeListeningCaptionCoroutine();
+
+        string finalizedSentenceForTranslation = _pendingTranslations.Dequeue();
+        _finalizedSentenceForTranslationInFlight = finalizedSentenceForTranslation;
+        _nmtInFlight = true;
+        _asrAwaitingTranslation = true;
+        _uiManager.UpdateText(TranslatingCaptionStatic());
+
+        if (_italianAsrModeEnabled)
+        {
+            _network.SendTranslationRequest(
+                finalizedSentenceForTranslation,
+                "ita_Latn",
+                "eng_Latn",
+                resp => MainThreadDispatcher.RunOnMainThread(
+                    () => HandleQueuedTranslationFinished(finalizedSentenceForTranslation, resp)));
+        }
+        else
+        {
+            _network.SendTranslationRequest(
+                finalizedSentenceForTranslation,
+                resp => MainThreadDispatcher.RunOnMainThread(
+                    () => HandleQueuedTranslationFinished(finalizedSentenceForTranslation, resp)));
+        }
+    }
+
+    private void HandleQueuedTranslationFinished(string sourceSentence, string resp)
+    {
+        _nmtInFlight = false;
+        _finalizedSentenceForTranslationInFlight = null;
+
+        if (string.IsNullOrEmpty(sourceSentence))
+        {
+            if (_pendingTranslations.Count > 0)
+            {
+                TryStartNextTranslation();
+            }
+            else
+            {
+                _asrAwaitingTranslation = false;
+                ScheduleListeningCaptionAfterTranslationHold();
+            }
+
+            return;
+        }
+
+        _lastTranslatedSentence = sourceSentence.Trim();
+        _voice?.NotifyTranslationSourceHandled(sourceSentence);
+
+        if (App.CurrentInputMode != App.InputMode.Asr || _uiManager == null)
+        {
+            if (_pendingTranslations.Count > 0)
+            {
+                TryStartNextTranslation();
+            }
+            else
+            {
+                _asrAwaitingTranslation = false;
+            }
+
+            return;
+        }
+
+        string shown = string.IsNullOrWhiteSpace(resp) ? sourceSentence : resp.Trim();
+        _uiManager.UpdateText(shown);
+        MarkFinalCaptionDisplayed();
+
+        if (_pendingTranslations.Count > 0)
+        {
+            TryStartNextTranslation();
+        }
+        else
+        {
+            ScheduleListeningCaptionAfterTranslationHold();
+        }
+    }
+
+    private void ScheduleListeningCaptionAfterTranslationHold()
+    {
+        CancelResumeListeningCaptionCoroutine();
+        _resumeListeningCaptionCo = StartCoroutine(CoResumeListeningCaptionAfterHold());
+    }
+
+    private IEnumerator CoResumeListeningCaptionAfterHold()
+    {
+        float hold = Mathf.Clamp(
+            Mathf.Min(holdFinalCaptionSeconds, holdAfterResultDisplaySeconds),
+            0f,
+            8f);
+        yield return new WaitForSecondsRealtime(hold);
+        _resumeListeningCaptionCo = null;
+
+        if (_pendingTranslations.Count > 0 || _nmtInFlight)
+        {
+            yield break;
+        }
+
+        if (App.CurrentInputMode != App.InputMode.Asr || !_asrActive || _uiManager == null)
+        {
+            yield break;
+        }
+
+        _asrAwaitingTranslation = false;
+        _uiManager.UpdateText(ListeningIdleCaption());
     }
 
     private void MarkFinalCaptionDisplayed()
@@ -325,12 +489,18 @@ public class WizardOfOzClient : MonoBehaviour
     }
 
     /// <summary>
-    /// Before returning to the idle listening caption, translate full merged ASR if it has not been sent to NMT yet.
+    /// Before returning to the idle listening caption, enqueue any merged ASR not yet translated (never sends chunks directly).
     /// </summary>
     private void OfferListeningCaptionOrTranslatePendingAsr()
     {
-        if (App.CurrentInputMode != App.InputMode.Asr || _uiManager == null || _voice == null)
+        if (App.CurrentInputMode != App.InputMode.Asr || _uiManager == null || _voice == null || _network == null)
         {
+            return;
+        }
+
+        if (_nmtInFlight || _pendingTranslations.Count > 0)
+        {
+            _uiManager.UpdateText(TranslatingCaptionStatic());
             return;
         }
 
@@ -352,47 +522,26 @@ public class WizardOfOzClient : MonoBehaviour
             return;
         }
 
-        _asrAwaitingTranslation = true;
-        _uiManager.UpdateText(src);
-        _lastHypothesisUiText = src;
+        EnqueueFinalizedSentenceForTranslation(src);
+    }
 
-        if (_italianAsrModeEnabled)
+    private void ShowListeningOrTranslatingAfterNonFatalError()
+    {
+        if (_uiManager == null || App.CurrentInputMode != App.InputMode.Asr)
         {
-            _network.SendTranslationRequest(src, "ita_Latn", "eng_Latn", (resp) =>
-            {
-                string en = string.IsNullOrWhiteSpace(resp) ? src : resp.Trim();
-                MainThreadDispatcher.RunOnMainThread(() =>
-                {
-                    if (App.CurrentInputMode != App.InputMode.Asr)
-                    {
-                        return;
-                    }
-
-                    _asrAwaitingTranslation = false;
-                    _voice.NotifyTranslationSourceHandled(src);
-                    _uiManager.UpdateText(en);
-                    MarkFinalCaptionDisplayed();
-                });
-            });
             return;
         }
 
-        _network.SendTranslationRequest(src, (resp) =>
+        if (_nmtInFlight || _pendingTranslations.Count > 0)
         {
-            MainThreadDispatcher.RunOnMainThread(() =>
-            {
-                if (App.CurrentInputMode != App.InputMode.Asr)
-                {
-                    return;
-                }
+            _uiManager.UpdateText(TranslatingCaptionStatic());
+            return;
+        }
 
-                _asrAwaitingTranslation = false;
-                _voice.NotifyTranslationSourceHandled(src);
-                string shown = string.IsNullOrWhiteSpace(resp) ? src : resp.Trim();
-                _uiManager.UpdateText(shown);
-                MarkFinalCaptionDisplayed();
-            });
-        });
+        if (!ShouldHoldFinalCaption())
+        {
+            _uiManager.UpdateText(ListeningIdleCaption());
+        }
     }
 
     /// <summary>
@@ -422,6 +571,12 @@ public class WizardOfOzClient : MonoBehaviour
         _voice.OnListeningStarted += () => MainThreadDispatcher.RunOnMainThread(() => {
             if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
+            if (_nmtInFlight || _pendingTranslations.Count > 0)
+            {
+                _uiManager.UpdateText(TranslatingCaptionStatic());
+                return;
+            }
+
             if (!ShouldHoldFinalCaption())
             {
                 OfferListeningCaptionOrTranslatePendingAsr();
@@ -430,6 +585,11 @@ public class WizardOfOzClient : MonoBehaviour
 
         _voice.OnHypothesis += (partial) => MainThreadDispatcher.RunOnMainThread(() => {
             if (App.CurrentInputMode != App.InputMode.Asr) return;
+            if (_nmtInFlight || _pendingTranslations.Count > 0)
+            {
+                return;
+            }
+
             if (ShouldHoldFinalCaption())
                 return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
@@ -448,96 +608,79 @@ public class WizardOfOzClient : MonoBehaviour
         _voice.OnSpeechBargeIn += () => MainThreadDispatcher.RunOnMainThread(() => {
             if (App.CurrentInputMode != App.InputMode.Asr) return;
             _listeningStallDeadline = Time.time + listeningStallSeconds;
+            if (_nmtInFlight || _pendingTranslations.Count > 0)
+            {
+                _uiManager.UpdateText(TranslatingCaptionStatic());
+                return;
+            }
+
             if (!ShouldHoldFinalCaption())
             {
                 OfferListeningCaptionOrTranslatePendingAsr();
             }
         });
 
-        _voice.OnSentenceCompleted += (text) => {
+        _voice.OnSentenceCompleted += (text) =>
+        {
             if (App.CurrentInputMode != App.InputMode.Asr)
+            {
                 return;
+            }
 
             MainThreadDispatcher.RunOnMainThread(() =>
             {
-                if (App.CurrentInputMode != App.InputMode.Asr) return;
-                _listeningStallDeadline = -1f;
-                _nextStallMessageAllowedTime = 0f;
-            });
-
-            string trimmed = string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim();
-
-            if (_italianAsrModeEnabled)
-            {
-                string it = string.IsNullOrEmpty(trimmed) ? "..." : trimmed;
-                if (!App.IsItalianTranslationEnabled)
+                if (App.CurrentInputMode != App.InputMode.Asr || _uiManager == null || _voice == null)
                 {
-                    MainThreadDispatcher.RunOnMainThread(() =>
-                    {
-                        if (App.CurrentInputMode != App.InputMode.Asr) return;
-                        _asrAwaitingTranslation = false;
-                        _voice.NotifyTranslationSourceHandled(string.IsNullOrEmpty(trimmed) ? it : trimmed);
-                        _uiManager.UpdateText(it);
-                        MarkFinalCaptionDisplayed();
-                    });
                     return;
                 }
 
-                MainThreadDispatcher.RunOnMainThread(() =>
-                {
-                    if (App.CurrentInputMode != App.InputMode.Asr) return;
-                    _asrAwaitingTranslation = true;
-                    _uiManager.UpdateText(it);
-                    _lastHypothesisUiText = it;
-                });
+                _listeningStallDeadline = -1f;
+                _nextStallMessageAllowedTime = 0f;
 
-                _network.SendTranslationRequest(it, "ita_Latn", "eng_Latn", (resp) =>
+                string trimmed = string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim();
+
+                if (_italianAsrModeEnabled)
                 {
-                    string en = string.IsNullOrWhiteSpace(resp) ? it : resp.Trim();
-                    MainThreadDispatcher.RunOnMainThread(() =>
+                    string it = string.IsNullOrEmpty(trimmed) ? "..." : trimmed;
+                    if (!App.IsItalianTranslationEnabled)
                     {
-                        if (App.CurrentInputMode != App.InputMode.Asr) return;
-                        _asrAwaitingTranslation = false;
+                        CancelResumeListeningCaptionCoroutine();
+                        _asrAwaitingTranslation = true;
+                        _lastTranslatedSentence = string.IsNullOrEmpty(trimmed) ? string.Empty : trimmed;
                         _voice.NotifyTranslationSourceHandled(string.IsNullOrEmpty(trimmed) ? it : trimmed);
-                        _uiManager.UpdateText(en);
+                        _uiManager.UpdateText(it);
                         MarkFinalCaptionDisplayed();
-                    });
-                });
-                return;
-            }
+                        ScheduleListeningCaptionAfterTranslationHold();
+                        return;
+                    }
 
-            if (!App.IsTranslationEnabled)
-            {
-                MainThreadDispatcher.RunOnMainThread(() =>
+                    if (string.IsNullOrEmpty(trimmed))
+                    {
+                        return;
+                    }
+
+                    EnqueueFinalizedSentenceForTranslation(trimmed);
+                    return;
+                }
+
+                if (!App.IsTranslationEnabled)
                 {
-                    if (App.CurrentInputMode != App.InputMode.Asr) return;
-                    _asrAwaitingTranslation = false;
+                    CancelResumeListeningCaptionCoroutine();
+                    _asrAwaitingTranslation = true;
+                    _lastTranslatedSentence = trimmed;
                     _voice.NotifyTranslationSourceHandled(trimmed);
                     _uiManager.UpdateText(trimmed);
                     MarkFinalCaptionDisplayed();
-                });
-                return;
-            }
+                    ScheduleListeningCaptionAfterTranslationHold();
+                    return;
+                }
 
-            MainThreadDispatcher.RunOnMainThread(() =>
-            {
-                if (App.CurrentInputMode != App.InputMode.Asr) return;
-                _asrAwaitingTranslation = true;
-                _uiManager.UpdateText(trimmed);
-                _lastHypothesisUiText = trimmed;
-            });
-
-            _network.SendTranslationRequest(trimmed, (resp) =>
-            {
-                MainThreadDispatcher.RunOnMainThread(() =>
+                if (string.IsNullOrEmpty(trimmed))
                 {
-                    if (App.CurrentInputMode != App.InputMode.Asr) return;
-                    _asrAwaitingTranslation = false;
-                    _voice.NotifyTranslationSourceHandled(trimmed);
-                    string shown = string.IsNullOrWhiteSpace(resp) ? trimmed : resp.Trim();
-                    _uiManager.UpdateText(shown);
-                    MarkFinalCaptionDisplayed();
-                });
+                    return;
+                }
+
+                EnqueueFinalizedSentenceForTranslation(trimmed);
             });
         };
 
@@ -547,19 +690,11 @@ public class WizardOfOzClient : MonoBehaviour
             if (string.IsNullOrEmpty(err)) return;
             if (err.StartsWith(HybridVoiceManager.AsrFallbackUserMessage, StringComparison.Ordinal))
             {
-                // Fallback already starts local dictation; do not show a system message in the caption.
-                if (!ShouldHoldFinalCaption())
-                {
-                    _uiManager.UpdateText(ListeningIdleCaption());
-                }
+                ShowListeningOrTranslatingAfterNonFatalError();
                 return;
             }
 
-            // Keep subtitles focused on speech content; non-fatal ASR/network diagnostics stay in logs.
-            if (!ShouldHoldFinalCaption())
-            {
-                _uiManager.UpdateText(ListeningIdleCaption());
-            }
+            ShowListeningOrTranslatingAfterNonFatalError();
         });
 
     }
