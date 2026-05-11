@@ -44,6 +44,12 @@ public sealed class HybridVoiceManager : IDisposable
     private float _lastCommittedAt = -999f;
     private string _lastHypothesisText;
     private float _lastHypothesisAt = -999f;
+    /// <summary>Wall-clock when the current (post-finalize) utterance first received text. Used to hard-cap utterance duration so a continuous monologue still finalizes.</summary>
+    private float _currentUtteranceStartedAt = -1f;
+    /// <summary>Hard cap on an active utterance before forcing finalize even while user keeps talking — enables pipelined NMT.</summary>
+    private const float MaxActiveUtteranceSeconds = 7.0f;
+    /// <summary>Caption end punctuation that triggers an immediate finalize on next pause check (bypass speech/barge-in graces).</summary>
+    private static readonly char[] SentenceTerminators = { '.', '!', '?', '。', '！', '？' };
     private bool _disposed;
     private bool _usingApi;
     private int _consecutiveApiFailures;
@@ -274,6 +280,7 @@ public sealed class HybridVoiceManager : IDisposable
         _latestAcceptedApiChunkId = 0;
         _lastHypothesisText = string.Empty;
         _lastTranslatedSourceSentence = string.Empty;
+        _currentUtteranceStartedAt = -1f;
     }
 
     private void OnMicLevelForBargeIn(float level)
@@ -325,6 +332,10 @@ public sealed class HybridVoiceManager : IDisposable
 
             string oldUtterance = _currentUtteranceTranscript;
             _currentUtteranceTranscript = newText;
+            if (_currentUtteranceStartedAt < 0f || string.IsNullOrWhiteSpace(oldUtterance))
+            {
+                _currentUtteranceStartedAt = Time.realtimeSinceStartup;
+            }
             LogAsrPipelineHybrid(
                 $"[ASR MERGE] old='{EscapeQuotesForAsrLog(oldUtterance)}' new='{EscapeQuotesForAsrLog(newText)}' merged='{EscapeQuotesForAsrLog(_currentUtteranceTranscript)}'");
             string hypothesis = NormalizeTranscriptForDedupe(_currentUtteranceTranscript);
@@ -347,9 +358,49 @@ public sealed class HybridVoiceManager : IDisposable
                 _finalizeSentenceCo = null;
             }
 
-            float finalizeDelay = isFinal ? 0.08f : _phraseEndSilenceSeconds;
+            // Pipeline-friendly finalize delay:
+            //   - isFinal flag → near-immediate.
+            //   - Caption ends in sentence punctuation → short (0.25s) — ship sentence to NMT, keep capturing.
+            //   - Otherwise → normal phrase-end pause.
+            float finalizeDelay;
+            if (isFinal)
+            {
+                finalizeDelay = 0.08f;
+            }
+            else if (EndsWithSentenceTerminator(hypothesis))
+            {
+                finalizeDelay = 0.25f;
+            }
+            else
+            {
+                finalizeDelay = _phraseEndSilenceSeconds;
+            }
             _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(finalizeDelay));
         });
+    }
+
+    /// <summary>True when the caption ends in <c>.</c>, <c>!</c>, or <c>?</c> (with optional trailing quote/bracket/whitespace).</summary>
+    private static bool EndsWithSentenceTerminator(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        int i = text.Length - 1;
+        while (i >= 0)
+        {
+            char c = text[i];
+            if (char.IsWhiteSpace(c) || c == '"' || c == '\'' || c == ')' || c == ']' || c == '」' || c == '』')
+            {
+                i--;
+                continue;
+            }
+            break;
+        }
+        if (i < 0) return false;
+        char last = text[i];
+        for (int k = 0; k < SentenceTerminators.Length; k++)
+        {
+            if (last == SentenceTerminators[k]) return true;
+        }
+        return false;
     }
 
     private IEnumerator ApiHealthWatchdog()
@@ -379,34 +430,34 @@ public sealed class HybridVoiceManager : IDisposable
         _finalizeSentenceCo = null;
         if (_disposed || !_usingApi) yield break;
 
-        // If the user resumed speech right around the cutoff boundary, give ASR a short grace period
-        // so we avoid splitting one human sentence into two fragments.
-        const float resumeGraceSeconds = 0.75f;
         float now = Time.realtimeSinceStartup;
-        if (now - _lastBargeInAt <= resumeGraceSeconds)
-        {
-            _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(resumeGraceSeconds));
-            yield break;
-        }
         var asr = HololensAsrManager.Instance;
-        if (asr != null)
+
+        // Live caption being checked against punctuation/length — use the raw merged caption (not the dedupe-stripped one).
+        string liveCaption = asr != null ? (asr.CurrentUtteranceTranscript ?? string.Empty) : _currentUtteranceTranscript;
+        bool endsWithSentence = EndsWithSentenceTerminator(liveCaption);
+        float utteranceAge = _currentUtteranceStartedAt > 0f ? (now - _currentUtteranceStartedAt) : 0f;
+        bool overCap = utteranceAge >= MaxActiveUtteranceSeconds;
+
+        // Pipeline mode: when we already have a clear sentence boundary (punctuation) or the utterance has run
+        // too long, ship it to NMT immediately. Skip speech/barge-in graces — the user can keep talking; the
+        // next chunk will become a fresh utterance and queue as the next translation.
+        bool urgentFinalize = endsWithSentence || overCap;
+
+        if (!urgentFinalize)
         {
-            if (asr.UtteranceAwaitingAsrContinuation)
+            // If the user resumed speech right around the cutoff boundary, give ASR a short grace period
+            // so we avoid splitting one human sentence into two fragments.
+            const float resumeGraceSeconds = 0.75f;
+            if (now - _lastBargeInAt <= resumeGraceSeconds)
+            {
+                _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(resumeGraceSeconds));
+                yield break;
+            }
+
+            if (asr != null && asr.UtteranceAwaitingAsrContinuation)
             {
                 _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(0.45f));
-                yield break;
-            }
-
-            if (asr.ShouldDeferSentenceGapDueToPipelineOrBuffer())
-            {
-                _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(0.55f));
-                yield break;
-            }
-
-            // Don't finalize while a chunk is still being decoded remotely.
-            if (asr.IsApiRequestInFlight)
-            {
-                _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(0.55f));
                 yield break;
             }
 
@@ -416,7 +467,26 @@ public sealed class HybridVoiceManager : IDisposable
                 _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(0.45f));
                 yield break;
             }
+
+            // Non-urgent: wait out the in-flight chunk so the finalized sentence includes the last decoded words.
+            if (asr != null)
+            {
+                if (asr.ShouldDeferSentenceGapDueToPipelineOrBuffer())
+                {
+                    _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(0.30f));
+                    yield break;
+                }
+
+                if (asr.IsApiRequestInFlight)
+                {
+                    _finalizeSentenceCo = _host.StartCoroutine(FinalizeSentenceAfterPause(0.30f));
+                    yield break;
+                }
+            }
         }
+        // Urgent finalize (sentence terminator present, or utterance too long) NEVER waits on in-flight requests.
+        // Whatever lands next will start a fresh utterance, which is exactly the pipelined behavior we want
+        // (otherwise: "Hello." + "Goodbye." merges into one big sentence while we wait for chunk #N's response).
 
         string rolled = asr != null
             ? NormalizeTranscriptForDedupe(asr.CurrentUtteranceTranscript ?? string.Empty)
@@ -426,13 +496,36 @@ public sealed class HybridVoiceManager : IDisposable
             yield break;
         }
 
-        string candidate = rolled;
-        bool duplicate = string.Equals(_lastCommittedSentence, candidate, StringComparison.OrdinalIgnoreCase);
+        // Snapshot the active utterance, then immediately clear merge state so the next ASR chunk
+        // starts a fresh sentence (no concatenation of "sentence A" + "sentence B" in UI / NMT).
+        string finalizedSentenceForTranslation = rolled;
+        bool duplicate = string.Equals(_lastCommittedSentence, finalizedSentenceForTranslation, StringComparison.OrdinalIgnoreCase);
+
+        _currentUtteranceTranscript = string.Empty;
+        _lastHypothesisText = string.Empty;
+        _lastHypothesisAt = -999f;
+        _currentUtteranceStartedAt = -1f;
+        if (asr != null)
+        {
+            asr.ClearTranscriptContext("phrase_finalized_for_nmt");
+        }
+
         if (!duplicate)
         {
-            _lastCommittedSentence = candidate;
+            _lastCommittedSentence = finalizedSentenceForTranslation;
             _lastCommittedAt = Time.realtimeSinceStartup;
-            OnSentenceCompleted?.Invoke(candidate);
+            LogAsrPipelineHybrid(
+                $"[ASR FINALIZE] urgent={urgentFinalize} age={utteranceAge:F2}s ends_punct={endsWithSentence} text='{EscapeQuotesForAsrLog(finalizedSentenceForTranslation)}'");
+            HololensAsrManager.Instance?.LogPipelineTelemetryLine(
+                $"[client] FINALIZE urgent={urgentFinalize} age={utteranceAge:F2}s ends_punct={endsWithSentence} text='{EscapeQuotesForAsrLog(finalizedSentenceForTranslation)}'",
+                "FINALIZE");
+            OnSentenceCompleted?.Invoke(finalizedSentenceForTranslation);
+        }
+        else
+        {
+            HololensAsrManager.Instance?.LogPipelineTelemetryLine(
+                $"[client] FINALIZE_SKIP_DUPLICATE text='{EscapeQuotesForAsrLog(finalizedSentenceForTranslation)}'",
+                "FINALIZE_DUP");
         }
     }
 
@@ -445,7 +538,8 @@ public sealed class HybridVoiceManager : IDisposable
 
         string normalized = Regex.Replace(text.Trim(), "\\s+", " ");
         normalized = Regex.Replace(normalized, "\\b(\\w+)(\\s+\\1\\b){1,}", "$1", RegexOptions.IgnoreCase);
-        return normalized.Trim(' ', '.', ',', ';', ':');
+        // Keep sentence-final punctuation (.!?) so EndsWithSentenceTerminator can detect boundaries; only strip listy punctuation.
+        return normalized.Trim(' ', ',', ';', ':');
     }
 
     private static string EscapeQuotesForAsrLog(string s, int maxLen = 200)

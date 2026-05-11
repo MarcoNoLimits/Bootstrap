@@ -11,7 +11,7 @@
                 <ui:Button name="btn-ita-asr-toggle" text="Switch to Italian Captions" class="action-rail-btn action-rail-btn-ita" tooltip="Switch captions to Italian speech recognition." />
                 <ui:Button name="btn-ita-translation-toggle" text="English Translation" class="action-rail-btn action-rail-btn-translation" tooltip="Translate Italian speech to English while Italian captions are active." />
                 <ui:Button name="btn-slr-capture" text="Sign Language" class="action-rail-btn action-rail-btn-sign" tooltip="Sign language mode is active" />
-                <ui:Label name="sign-inference-caption" class="sign-inference-caption" text="" />
+                <!-- sign-inference-caption removed: spelling lives in the world subtitle panel (subtitle-text) only. -->
                 <ui:Label name="xr-debug-hud" class="xr-debug-hud" text="" />
             </ui:VisualElement>
             <!-- Settings sidebar hidden with main screen -->

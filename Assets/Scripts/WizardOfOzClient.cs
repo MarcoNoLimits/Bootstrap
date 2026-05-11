@@ -92,9 +92,9 @@ public class WizardOfOzClient : MonoBehaviour
     [Tooltip("Throttle ASR partial-caption refreshes to avoid UI hitches while clicking buttons.")]
     [SerializeField] private float hypothesisUiUpdateMinIntervalSeconds = 0.14f;
     [Tooltip("After a sentence result, keep it visible for this long before showing 'Listening...' again.")]
-    [SerializeField] private float holdFinalCaptionSeconds = 1.0f;
+    [SerializeField] private float holdFinalCaptionSeconds = 4.0f;
     [Tooltip("After final text/translation is rendered, keep it readable before showing Listening again.")]
-    [SerializeField] private float holdAfterResultDisplaySeconds = 1.0f;
+    [SerializeField] private float holdAfterResultDisplaySeconds = 4.0f;
     [Tooltip("Top instruction shown when ASR is activated, then auto-hidden.")]
     [SerializeField] private string asrTopInstructionText = "Tip: A longer pause means end of sentence.";
     [Tooltip("How long to keep the ASR top instruction visible (seconds).")]
@@ -342,28 +342,63 @@ public class WizardOfOzClient : MonoBehaviour
     {
         if (_uiManager == null || _voice == null || _network == null)
         {
+            LogNmtTelemetry(
+                $"[nmt] ENQUEUE_SKIP reason=missing_dependency ui={(_uiManager != null)} voice={(_voice != null)} network={(_network != null)} text='{EscapeTelemetryQuotes(finalizedUtterance)}'",
+                "ENQUEUE_SKIP");
             return;
         }
 
         string immutable = (finalizedUtterance ?? string.Empty).Trim();
         if (string.IsNullOrEmpty(immutable))
         {
+            LogNmtTelemetry("[nmt] ENQUEUE_SKIP reason=empty_text", "ENQUEUE_SKIP");
             return;
         }
 
         if (string.Equals(immutable, _lastTranslatedSentence, StringComparison.Ordinal))
         {
+            LogNmtTelemetry(
+                $"[nmt] ENQUEUE_SKIP reason=duplicate text='{EscapeTelemetryQuotes(immutable)}'",
+                "ENQUEUE_SKIP");
             return;
         }
 
         _pendingTranslations.Enqueue(immutable);
+        LogNmtTelemetry(
+            $"[nmt] ENQUEUE q={_pendingTranslations.Count} in_flight={_nmtInFlight} translation_on={App.IsTranslationEnabled} italian_mode={_italianAsrModeEnabled} text='{EscapeTelemetryQuotes(immutable)}'",
+            "ENQUEUE");
         TryStartNextTranslation();
+    }
+
+    private static string EscapeTelemetryQuotes(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return string.Empty;
+        return s.Replace("'", "\\'");
+    }
+
+    private void LogNmtTelemetry(string compactLine, string telemetryEvent)
+    {
+        if (string.IsNullOrEmpty(compactLine)) return;
+        UnityEngine.Debug.Log(compactLine);
+        try
+        {
+            HololensAsrManager.Instance?.LogPipelineTelemetryLine(compactLine, telemetryEvent);
+        }
+        catch
+        {
+        }
     }
 
     private void TryStartNextTranslation()
     {
         if (_nmtInFlight || _network == null || _uiManager == null || _voice == null)
         {
+            if (_pendingTranslations.Count > 0)
+            {
+                LogNmtTelemetry(
+                    $"[nmt] START_SKIP in_flight={_nmtInFlight} q={_pendingTranslations.Count} network={(_network != null)}",
+                    "START_SKIP");
+            }
             return;
         }
 
@@ -379,6 +414,9 @@ public class WizardOfOzClient : MonoBehaviour
         _nmtInFlight = true;
         _asrAwaitingTranslation = true;
         _uiManager.UpdateText(TranslatingCaptionStatic());
+        LogNmtTelemetry(
+            $"[nmt] START italian_mode={_italianAsrModeEnabled} text='{EscapeTelemetryQuotes(finalizedSentenceForTranslation)}'",
+            "START");
 
         if (_italianAsrModeEnabled)
         {
@@ -391,8 +429,12 @@ public class WizardOfOzClient : MonoBehaviour
         }
         else
         {
+            // NMT-MenKan `TranslateResponse` expects NLLB tags; without them the server may default to a no-op
+            // (same-language pass-through), which shows as tgt == src in logs.
             _network.SendTranslationRequest(
                 finalizedSentenceForTranslation,
+                "eng_Latn",
+                "ita_Latn",
                 resp => MainThreadDispatcher.RunOnMainThread(
                     () => HandleQueuedTranslationFinished(finalizedSentenceForTranslation, resp)));
         }
@@ -402,6 +444,10 @@ public class WizardOfOzClient : MonoBehaviour
     {
         _nmtInFlight = false;
         _finalizedSentenceForTranslationInFlight = null;
+
+        LogNmtTelemetry(
+            $"[nmt] RESULT have_resp={!string.IsNullOrWhiteSpace(resp)} src='{EscapeTelemetryQuotes(sourceSentence)}' tgt='{EscapeTelemetryQuotes(resp)}'",
+            "RESULT");
 
         if (string.IsNullOrEmpty(sourceSentence))
         {
@@ -435,9 +481,17 @@ public class WizardOfOzClient : MonoBehaviour
             return;
         }
 
-        string shown = string.IsNullOrWhiteSpace(resp) ? sourceSentence : resp.Trim();
+        string srcLine = sourceSentence.Trim();
+        string tgtLine = string.IsNullOrWhiteSpace(resp) ? string.Empty : resp.Trim();
+        // Show transcript and translation together so the user can read both before we resume "Listening".
+        string shown = string.IsNullOrEmpty(tgtLine) || string.Equals(srcLine, tgtLine, StringComparison.Ordinal)
+            ? srcLine
+            : srcLine + "\n" + tgtLine;
         _uiManager.UpdateText(shown);
         MarkFinalCaptionDisplayed();
+        LogNmtTelemetry(
+            $"[nmt] DISPLAY hold_s={Mathf.Min(holdFinalCaptionSeconds, holdAfterResultDisplaySeconds):F1} q_after={_pendingTranslations.Count}",
+            "DISPLAY");
 
         if (_pendingTranslations.Count > 0)
         {
@@ -489,7 +543,9 @@ public class WizardOfOzClient : MonoBehaviour
     }
 
     /// <summary>
-    /// Before returning to the idle listening caption, enqueue any merged ASR not yet translated (never sends chunks directly).
+    /// Pick the right caption while returning to idle. **Never** enqueues NMT here — translation is only
+    /// triggered from <see cref="HybridVoiceManager.OnSentenceCompleted"/> with the finalized sentence snapshot.
+    /// UI priority: Translating → result hold → Listening idle.
     /// </summary>
     private void OfferListeningCaptionOrTranslatePendingAsr()
     {
@@ -509,20 +565,7 @@ public class WizardOfOzClient : MonoBehaviour
             return;
         }
 
-        bool wantNmt = _italianAsrModeEnabled ? App.IsItalianTranslationEnabled : App.IsTranslationEnabled;
-        if (!wantNmt)
-        {
-            _uiManager.UpdateText(ListeningIdleCaption());
-            return;
-        }
-
-        if (!_voice.TryGetUntranslatedMergedAsrUtterance(out string src))
-        {
-            _uiManager.UpdateText(ListeningIdleCaption());
-            return;
-        }
-
-        EnqueueFinalizedSentenceForTranslation(src);
+        _uiManager.UpdateText(ListeningIdleCaption());
     }
 
     private void ShowListeningOrTranslatingAfterNonFatalError()
@@ -585,7 +628,8 @@ public class WizardOfOzClient : MonoBehaviour
 
         _voice.OnHypothesis += (partial) => MainThreadDispatcher.RunOnMainThread(() => {
             if (App.CurrentInputMode != App.InputMode.Asr) return;
-            if (_nmtInFlight || _pendingTranslations.Count > 0)
+            // UI priority: Translating > result hold > Listening. Live ASR partials must not overwrite a Translating/result frame.
+            if (_nmtInFlight || _pendingTranslations.Count > 0 || _asrAwaitingTranslation)
             {
                 return;
             }
@@ -624,6 +668,9 @@ public class WizardOfOzClient : MonoBehaviour
         {
             if (App.CurrentInputMode != App.InputMode.Asr)
             {
+                LogNmtTelemetry(
+                    $"[nmt] SENTENCE_DROP reason=not_asr_mode mode={App.CurrentInputMode} text='{EscapeTelemetryQuotes(text)}'",
+                    "SENTENCE_DROP");
                 return;
             }
 
@@ -631,6 +678,9 @@ public class WizardOfOzClient : MonoBehaviour
             {
                 if (App.CurrentInputMode != App.InputMode.Asr || _uiManager == null || _voice == null)
                 {
+                    LogNmtTelemetry(
+                        $"[nmt] SENTENCE_DROP reason=stale_ctx mode={App.CurrentInputMode} ui={(_uiManager != null)} voice={(_voice != null)} text='{EscapeTelemetryQuotes(text)}'",
+                        "SENTENCE_DROP");
                     return;
                 }
 
@@ -638,6 +688,9 @@ public class WizardOfOzClient : MonoBehaviour
                 _nextStallMessageAllowedTime = 0f;
 
                 string trimmed = string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim();
+                LogNmtTelemetry(
+                    $"[nmt] SENTENCE italian_mode={_italianAsrModeEnabled} translation_en={App.IsTranslationEnabled} translation_it={App.IsItalianTranslationEnabled} text='{EscapeTelemetryQuotes(trimmed)}'",
+                    "SENTENCE");
 
                 if (_italianAsrModeEnabled)
                 {
@@ -665,6 +718,9 @@ public class WizardOfOzClient : MonoBehaviour
 
                 if (!App.IsTranslationEnabled)
                 {
+                    LogNmtTelemetry(
+                        $"[nmt] TRANSLATION_OFF showing_raw text='{EscapeTelemetryQuotes(trimmed)}' hold_s={Mathf.Min(holdFinalCaptionSeconds, holdAfterResultDisplaySeconds):F1}",
+                        "TRANSLATION_OFF");
                     CancelResumeListeningCaptionCoroutine();
                     _asrAwaitingTranslation = true;
                     _lastTranslatedSentence = trimmed;
@@ -852,7 +908,13 @@ public class WizardOfOzClient : MonoBehaviour
     /// <summary>Clears subtitle caption (e.g. when switching to Sign or English ASR).</summary>
     public void ClearSubtitleCaption()
     {
+        CancelResumeListeningCaptionCoroutine();
         _asrAwaitingTranslation = false;
+        _nmtInFlight = false;
+        _finalizedSentenceForTranslationInFlight = null;
+        _pendingTranslations.Clear();
+        _lastTranslatedSentence = string.Empty;
+        _lastHypothesisUiText = string.Empty;
         HololensAsrManager.Instance?.ClearTranscriptContext("manual_reset");
         _uiManager?.UpdateText("");
     }
@@ -1250,9 +1312,22 @@ public class NetworkManager
     private static string ExtractTranslation(string json)
     {
         if (string.IsNullOrWhiteSpace(json)) return "";
-        Match m = Regex.Match(json, "\"translation\"\\s*:\\s*\"(?<v>(?:\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase);
-        if (!m.Success) return "";
-        return Regex.Unescape(m.Groups["v"].Value).Trim();
+        // Primary: NMT-MenKan `TranslateResponse.translation` (scripts/nmt_http_api.py).
+        // Fallbacks: other HF / proxy shapes.
+        string[] keys = { "translation", "translated_text", "translated", "output_text", "output", "result", "text" };
+        for (int i = 0; i < keys.Length; i++)
+        {
+            Match m = Regex.Match(
+                json,
+                "\"" + keys[i] + "\"\\s*:\\s*\"(?<v>(?:\\\\.|[^\"])*)\"",
+                RegexOptions.IgnoreCase);
+            if (m.Success)
+            {
+                string v = Regex.Unescape(m.Groups["v"].Value).Trim();
+                if (!string.IsNullOrWhiteSpace(v)) return v;
+            }
+        }
+        return "";
     }
 
     private async System.Threading.Tasks.Task<string> TranslateOnce(
@@ -1276,8 +1351,30 @@ public class NetworkManager
             request.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
         }
 
+        // Echoed back as `request_id` in `TranslateResponse` (see nmt_http_api.py).
+        request.Headers.TryAddWithoutValidation("X-Request-Id", requestId);
+
         var resp = await client.SendAsync(request);
         var responseBody = await resp.Content.ReadAsStringAsync();
+        if (!string.IsNullOrEmpty(responseBody))
+        {
+            responseBody = responseBody.TrimStart('\uFEFF', ' ', '\t', '\r', '\n');
+        }
+        string compactBody = (responseBody ?? string.Empty);
+        if (compactBody.Length > 280) compactBody = compactBody.Substring(0, 280) + "…";
+
+        try
+        {
+            HololensAsrManager.Instance?.LogPipelineTelemetryLine(
+                "[nmt] HTTP id=" + requestId + " status=" + (int)resp.StatusCode +
+                " src_lang=" + (sourceLang ?? "auto") + " tgt_lang=" + (targetLang ?? "auto") +
+                " body=" + compactBody.Replace("\n", " ").Replace("\r", " "),
+                "HTTP");
+        }
+        catch
+        {
+        }
+
         if (!resp.IsSuccessStatusCode)
         {
             if (DateTime.UtcNow >= _nextConnectionLogAllowedAt)
@@ -1289,6 +1386,18 @@ public class NetworkManager
         }
 
         string translated = ExtractTranslation(responseBody);
+        if (string.IsNullOrWhiteSpace(translated))
+        {
+            try
+            {
+                HololensAsrManager.Instance?.LogPipelineTelemetryLine(
+                    "[nmt] PARSE_FAIL id=" + requestId + " no recognized translation key in response; falling back to source.",
+                    "PARSE_FAIL");
+            }
+            catch
+            {
+            }
+        }
         return string.IsNullOrWhiteSpace(translated) ? text : translated;
     }
 }

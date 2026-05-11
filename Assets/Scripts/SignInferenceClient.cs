@@ -214,8 +214,23 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private int noHandResetFrames = 3;
     [Tooltip("Hand visible but prediction rejected/low-confidence: clear stale candidate after this many frames to kill ghost letters.")]
     [SerializeField] private int staleCandidateClearWeakFrames = 5;
+    [Tooltip("When true, word boundaries use wall-clock time since last hand + debounce (stable across FPS). When false, use frame thresholds below.")]
+    [SerializeField] private bool useTimeBasedNoHandWordBoundary = true;
+    [Tooltip("Consecutive no-hand responses before timing/word-boundary logic runs (ignores single-frame tracking drops).")]
+    [SerializeField] private int noHandDebounceFrames = 2;
+    [Tooltip("Minimum letters in the live buffer before an auto word-boundary (space) is inserted; shorter buffers wait for end-of-sentence flush.")]
+    [SerializeField] private int minWordLengthForAutoSpace = 2;
+    [Tooltip("Hand absent at least this long (after debounce) before finalizing the current buffer as a word + space.")]
+    [SerializeField] private float autoSpaceNoHandSeconds = 0.75f;
+    [Tooltip("Hand absent at least this long (after debounce) before flushing any remaining buffer and starting a new caption line / sentence bucket.")]
+    [SerializeField] private float endSentenceNoHandSeconds = 2f;
+    [Tooltip("Hand absent at least this long (after debounce) before soft-clearing running caption state (keeps composed history unless configured otherwise).")]
+    [SerializeField] private float autoClearNoHandSeconds = 4f;
+    [Tooltip("Legacy: consecutive no-hand frames for word boundary when useTimeBasedNoHandWordBoundary is false.")]
     [SerializeField] private int autoSpaceNoHandFrames = 6;
+    [Tooltip("Legacy: consecutive no-hand frames for sentence flush when time-based mode is off.")]
     [SerializeField] private int endSentenceNoHandFrames = 15;
+    [Tooltip("Legacy: consecutive no-hand frames for soft clear when time-based mode is off.")]
     [SerializeField] private int autoClearNoHandFrames = 40;
     [Tooltip("Clear active sign caption state if no new committed letter arrives for this many seconds (independent of frame counts).")]
     [SerializeField] private float captionIdleExpirySeconds = 15f;
@@ -275,6 +290,13 @@ public class SignInferenceClient : MonoBehaviour
     private int _pvLoopConsecutiveFailures;
     private int _consecutiveNoHandSeparatorFrames;
     private bool _handSeparationReady = true;
+    /// <summary>Wall-clock time when we last saw hand (not no-hand); used for time-based word boundaries. Negative = not yet observed.</summary>
+    private float _lastHandSeenTime = -1f;
+    private bool _legacyAutoSpaceIssuedThisNoHandStreak;
+    private bool _legacySentenceBreakIssuedThisNoHandStreak;
+    private bool _legacySoftClearIssuedThisNoHandStreak;
+    private bool _timeSentenceBreakIssuedThisNoHandStreak;
+    private bool _timeSoftClearIssuedThisNoHandStreak;
 
     // Captioning variables
     private string _currentWordBuffer = "";
@@ -485,6 +507,24 @@ public class SignInferenceClient : MonoBehaviour
         aggressiveLetterCommitMargin = Mathf.Clamp(aggressiveLetterCommitMargin, 0f, 1f);
         sameLetterResubmitCooldownSeconds = Mathf.Clamp(sameLetterResubmitCooldownSeconds, 0f, 5f);
         captionIdleExpirySeconds = Mathf.Clamp(captionIdleExpirySeconds, 0f, 60f);
+        noHandDebounceFrames = Mathf.Clamp(noHandDebounceFrames, 1, 30);
+        minWordLengthForAutoSpace = Mathf.Clamp(minWordLengthForAutoSpace, 1, 32);
+        autoSpaceNoHandSeconds = Mathf.Clamp(autoSpaceNoHandSeconds, 0.05f, 5f);
+        endSentenceNoHandSeconds = Mathf.Clamp(endSentenceNoHandSeconds, 0.1f, 15f);
+        autoClearNoHandSeconds = Mathf.Clamp(autoClearNoHandSeconds, 0.2f, 30f);
+        if (endSentenceNoHandSeconds < autoSpaceNoHandSeconds + 0.05f)
+        {
+            endSentenceNoHandSeconds = autoSpaceNoHandSeconds + 0.05f;
+        }
+
+        if (autoClearNoHandSeconds < endSentenceNoHandSeconds + 0.1f)
+        {
+            autoClearNoHandSeconds = endSentenceNoHandSeconds + 0.1f;
+        }
+
+        autoSpaceNoHandFrames = Mathf.Clamp(autoSpaceNoHandFrames, 1, 300);
+        endSentenceNoHandFrames = Mathf.Max(endSentenceNoHandFrames, autoSpaceNoHandFrames);
+        autoClearNoHandFrames = Mathf.Max(autoClearNoHandFrames, endSentenceNoHandFrames);
 
         _roiTexture = new Texture2D(targetSize, targetSize, TextureFormat.RGB24, false);
         _debugFrameDir = Path.Combine(Application.persistentDataPath, "sign_debug");
@@ -1061,6 +1101,18 @@ public class SignInferenceClient : MonoBehaviour
             SetLiveCaptionForHud("");
             UpdateIdleStatusHint();
         }
+    }
+
+    /// <summary>
+    /// Clears all composed sign text/caption state so mode switches do not resurrect old SLR history.
+    /// </summary>
+    public void ClearSignHistory(string reason = "manual_reset")
+    {
+        ResetActiveCaptionState(reason, clearComposedHistory: true, clearSentenceHistory: true);
+        _lastNetworkError = "";
+        _cameraUserMessage = "";
+        _requestInFlight = false;
+        SetLiveCaptionForHud("");
     }
 
 #if UNITY_WSA && !UNITY_EDITOR
@@ -2274,8 +2326,143 @@ public class SignInferenceClient : MonoBehaviour
         _requestInFlight = false;
     }
 
+    private void ResetNoHandBoundaryStreakStateForHandPresent()
+    {
+        _legacyAutoSpaceIssuedThisNoHandStreak = false;
+        _legacySentenceBreakIssuedThisNoHandStreak = false;
+        _legacySoftClearIssuedThisNoHandStreak = false;
+        _timeSentenceBreakIssuedThisNoHandStreak = false;
+        _timeSoftClearIssuedThisNoHandStreak = false;
+    }
+
+    /// <summary>
+    /// Committed finalized words plus the live fingerspell buffer (letters are not written to history until a word is finalized).
+    /// </summary>
+    private string BuildClientHistoryTextForInferPayload()
+    {
+        string h = _historyText ?? string.Empty;
+        if (_currentWordBuffer.Length == 0)
+        {
+            return h.TrimEnd();
+        }
+
+        string trimmedCommitted = h.TrimEnd();
+        if (trimmedCommitted.Length == 0)
+        {
+            return _currentWordBuffer;
+        }
+
+        return trimmedCommitted + " " + _currentWordBuffer;
+    }
+
+    private void AppendFinalizedWordToHistory(string finalizedWord)
+    {
+        if (string.IsNullOrWhiteSpace(finalizedWord))
+        {
+            return;
+        }
+
+        string w = finalizedWord.Trim();
+        if (w.Length == 0)
+        {
+            return;
+        }
+
+        _historyText += w;
+        _historyText += " ";
+        int cap = Mathf.Max(24, maxHistoryChars);
+        if (_historyText.Length > cap)
+        {
+            _historyText = _historyText.Substring(_historyText.Length - cap);
+        }
+    }
+
+    /// <summary>
+    /// Commits the live fingerspell buffer as one corrected word + trailing space in history and caption lines.
+    /// </summary>
+    /// <returns>True if a word was committed.</returns>
+    private bool TryFinalizeCurrentWordBuffer(int minLetters)
+    {
+        if (_currentWordBuffer.Length < Mathf.Max(1, minLetters))
+        {
+            return false;
+        }
+
+        string finalizedWord = CorrectWordLocal(_currentWordBuffer);
+        AppendWordToCaption(finalizedWord);
+        AppendFinalizedWordToHistory(finalizedWord);
+        _currentWordBuffer = "";
+        return true;
+    }
+
+    private void EnqueueSentenceHistoryAndClearCaptionLines()
+    {
+        string trimmed = _historyText.TrimEnd();
+        if (trimmed.Length > 0)
+        {
+            _sentenceHistory.Enqueue(trimmed);
+            while (_sentenceHistory.Count > Mathf.Max(1, maxCompletedSentences))
+            {
+                _sentenceHistory.Dequeue();
+            }
+        }
+
+        _historyText = "";
+        _captionLines[0] = "";
+        _captionLines[1] = "";
+    }
+
+    private void ProcessTimeBasedNoHandCaption()
+    {
+        if (_lastHandSeenTime < 0f)
+        {
+            // First debounced no-hand without a prior hand frame: start the clock here (avoids huge "away" before first /predict).
+            _lastHandSeenTime = Time.time;
+        }
+
+        float away = Time.time - _lastHandSeenTime;
+
+        // Word boundary only — finalize the grey buffer into the visible white caption line.
+        // Sentence/soft-clear were wiping the spelling between letters; user wants letters to keep appending to the same string.
+        if (away >= autoSpaceNoHandSeconds)
+        {
+            TryFinalizeCurrentWordBuffer(minWordLengthForAutoSpace);
+        }
+
+        if (away >= endSentenceNoHandSeconds && !_timeSentenceBreakIssuedThisNoHandStreak)
+        {
+            _timeSentenceBreakIssuedThisNoHandStreak = true;
+            TryFinalizeCurrentWordBuffer(1);
+        }
+    }
+
+    private void ProcessFrameBasedNoHandCaption()
+    {
+        int autoF = Mathf.Max(1, autoSpaceNoHandFrames);
+        int endF = Mathf.Max(autoF, endSentenceNoHandFrames);
+
+        if (_noHandFrames >= autoF)
+        {
+            TryFinalizeCurrentWordBuffer(minWordLengthForAutoSpace);
+        }
+
+        if (_noHandFrames >= endF && !_legacySentenceBreakIssuedThisNoHandStreak)
+        {
+            _legacySentenceBreakIssuedThisNoHandStreak = true;
+            TryFinalizeCurrentWordBuffer(1);
+        }
+    }
+
     private void HandleInferResponse(InferResponse response)
     {
+        // Drop late responses arriving after Sign Language was turned off (otherwise they
+        // re-populate _currentWordBuffer / _lastServerText / _lastDisplayCaption and the just-cleared
+        // subtitle re-renders the old line).
+        if (!signCaptureActive || App.CurrentInputMode != App.InputMode.Sign)
+        {
+            return;
+        }
+
         bool noHand = IsNoHand(response);
 
         if (noHand)
@@ -2346,34 +2533,17 @@ public class SignInferenceClient : MonoBehaviour
                 _consecutiveNoHandSeparatorFrames = 0;
             }
 
-            if (_noHandFrames == Mathf.Max(1, autoSpaceNoHandFrames))
+            int debounceN = Mathf.Max(1, noHandDebounceFrames);
+            if (_noHandFrames >= debounceN)
             {
-                if (_currentWordBuffer.Length > 0)
+                if (useTimeBasedNoHandWordBoundary)
                 {
-                    string finalizedWord = CorrectWordLocal(_currentWordBuffer);
-                    AppendWordToCaption(finalizedWord);
-                    _historyText += " ";
-                    _currentWordBuffer = "";
+                    ProcessTimeBasedNoHandCaption();
                 }
-            }
-            else if (_noHandFrames == Mathf.Max(1, endSentenceNoHandFrames))
-            {
-                if (_historyText.Length > 0)
+                else
                 {
-                    _sentenceHistory.Enqueue(_historyText);
-                    while (_sentenceHistory.Count > Mathf.Max(1, maxCompletedSentences))
-                    {
-                        _sentenceHistory.Dequeue();
-                    }
-                    _historyText = "";
+                    ProcessFrameBasedNoHandCaption();
                 }
-                _captionLines[0] = "";
-                _captionLines[1] = "";
-            }
-            else if (_noHandFrames == Mathf.Max(1, autoClearNoHandFrames))
-            {
-                // Soft clear after long no-hand to avoid stale running text in the next signing burst.
-                ResetActiveCaptionState("auto_no_hand_soft_clear", clearComposedHistory: false, clearSentenceHistory: false);
             }
 
             if (letterText != null)
@@ -2393,6 +2563,8 @@ public class SignInferenceClient : MonoBehaviour
         else
         {
             _noHandFrames = 0;
+            ResetNoHandBoundaryStreakStateForHandPresent();
+            _lastHandSeenTime = Time.time;
 
             if (_signClientState == SignClientState.Idle)
             {
@@ -2435,12 +2607,6 @@ public class SignInferenceClient : MonoBehaviour
                     && !sameLetterCooldownBlocks)
                 {
                     _currentWordBuffer += _candidateLetter;
-                    _historyText += _candidateLetter;
-                    if (_historyText.Length > Mathf.Max(24, maxHistoryChars))
-                    {
-                        _historyText =
-                            _historyText.Substring(_historyText.Length - Mathf.Max(24, maxHistoryChars));
-                    }
 
                     _lastCommitAt = Time.time;
                     _signClientState = SignClientState.LetterCommitted;
@@ -2484,13 +2650,15 @@ public class SignInferenceClient : MonoBehaviour
         _lastDisplayCaption = displayCaption ?? "";
 
         if (string.IsNullOrWhiteSpace(response.text))
-            response.text = _historyText;
+        {
+            response.text = BuildClientHistoryTextForInferPayload();
+        }
 
         bool captionIdleNoHand = noHand && _noHandFrames >= resetAfter;
         _inferCaptionLine = FormatInferCaption(
             response,
             displayCaption,
-            _historyText,
+            BuildClientHistoryTextForInferPayload(),
             _candidateLetter,
             _candidateStableCount,
             requiredStableFrames,
@@ -2554,13 +2722,7 @@ public class SignInferenceClient : MonoBehaviour
             displayStr += $"<color=#888888>{_currentWordBuffer}</color>";
         }
 
-        // Output to main HUD caption
-        if (_mainHudCaptionLabel != null)
-        {
-            _mainHudCaptionLabel.text = "";
-            _mainHudCaptionLabel.style.display = DisplayStyle.None;
-        }
-
+        // Sign captions render only on the world subtitle panel (subtitle-text); no under-buttons mirror.
         return displayStr;
     }
 
@@ -2607,23 +2769,8 @@ public class SignInferenceClient : MonoBehaviour
 
     private void MaybeExpireCaptionByTime()
     {
-        float expiry = Mathf.Clamp(captionIdleExpirySeconds, 0f, 60f);
-        if (expiry <= 0f || _lastCommitAt <= 0f)
-        {
-            return;
-        }
-
-        if (Time.time - _lastCommitAt < expiry)
-        {
-            return;
-        }
-
-        if (!HasActiveCaptionState())
-        {
-            return;
-        }
-
-        ResetActiveCaptionState("idle_time_expiry", clearComposedHistory: false, clearSentenceHistory: false);
+        // Spelling is intentionally persistent — never auto-wipe accumulated text on idle.
+        // Caption only resets on mode switch (ResetActiveSignCaption -> ResetActiveCaptionState with clearComposedHistory:true).
     }
 
     private void ResetActiveCaptionState(string reason, bool clearComposedHistory, bool clearSentenceHistory)
@@ -2636,6 +2783,9 @@ public class SignInferenceClient : MonoBehaviour
         _captionLines[0] = "";
         _captionLines[1] = "";
         _lastDisplayCaption = "";
+        // GetCaptionOnlyText falls back to _lastServerText when other buffers are empty — must clear too
+        // so the subtitle panel actually empties after Sign Language is turned off.
+        _lastServerText = "";
         _candidateLetter = "";
         _candidateStableCount = 0;
         _pendingLetter = null;
@@ -2658,6 +2808,9 @@ public class SignInferenceClient : MonoBehaviour
             letterText.text = "";
         }
 
+        _lastHandSeenTime = Time.time;
+        ResetNoHandBoundaryStreakStateForHandPresent();
+
         ApplyCaptionToSubtitle();
     }
 
@@ -2665,6 +2818,21 @@ public class SignInferenceClient : MonoBehaviour
     {
         SetLiveCaptionForHud("");
         // Keep idle state silent so it does not overwrite other UI text channels.
+    }
+
+    private static void ApplyCaptionToUiToolkitLabel(Label label, string caption)
+    {
+        if (label == null)
+        {
+            return;
+        }
+
+        // Fingerspell UI uses <color> markup in UpdateCaptionLinesFromBuffer; must be on or labels look wrong/truncated.
+        label.enableRichText = true;
+        string t = caption ?? string.Empty;
+        bool show = !string.IsNullOrEmpty(t);
+        label.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+        label.text = show ? t : string.Empty;
     }
 
     private void ApplyCaptionToSubtitle()
@@ -2695,27 +2863,17 @@ public class SignInferenceClient : MonoBehaviour
             "{\"mode\":\"" + App.CurrentInputMode.ToString() + "\",\"signCaptureActive\":" + (signCaptureActive ? "true" : "false") + ",\"captionLen\":" + caption.Length.ToString(CultureInfo.InvariantCulture) + "}");
         #endregion
 
-        // Update every bound outlet (do not return early — main HUD caption must not be skipped when subtitle-text exists).
+        // Sign captions render only on the world subtitle panel; under-buttons mirror was removed.
         if (statusHintText != null)
         {
             statusHintText.text = caption;
         }
 
-        if (_subtitleLabel != null)
-        {
-            _subtitleLabel.text = caption;
-            _subtitleLabel.style.display = DisplayStyle.Flex;
-        }
+        ApplyCaptionToUiToolkitLabel(_subtitleLabel, caption);
 
         if (serverText != null)
         {
             serverText.text = caption;
-        }
-
-        if (_mainHudCaptionLabel != null)
-        {
-            _mainHudCaptionLabel.text = "";
-            _mainHudCaptionLabel.style.display = DisplayStyle.None;
         }
 
         SetLiveCaptionForHud(caption);
@@ -3440,13 +3598,19 @@ public class SignInferenceClient : MonoBehaviour
     private IEnumerator BindToolkitCaptionLabelsWhenReady()
     {
         float deadline = Time.time + 8f;
+        // sign-inference-caption (under-buttons mirror) was removed; bind only the world subtitle-text label.
         while (Time.time < deadline)
         {
             UIDocument[] docs = FindObjectsOfType<UIDocument>();
+
             for (int i = 0; i < docs.Length; i++)
             {
                 var root = docs[i] != null ? docs[i].rootVisualElement : null;
-                if (root == null) continue;
+                if (root == null)
+                {
+                    continue;
+                }
+
                 if (_subtitleLabel == null)
                 {
                     Label sub = root.Q<Label>("subtitle-text");
@@ -3457,26 +3621,13 @@ public class SignInferenceClient : MonoBehaviour
                         {
                             _hudObjects.Add(docs[i].gameObject);
                         }
-                        Debug.Log("[SignInferenceClient] Bound subtitle-text for sign captions (Billboarding enabled).");
-                    }
-                }
 
-                if (_mainHudCaptionLabel == null)
-                {
-                    Label mainCap = root.Q<Label>("sign-inference-caption");
-                    if (mainCap != null)
-                    {
-                        _mainHudCaptionLabel = mainCap;
-                        if (!_hudObjects.Contains(docs[i].gameObject))
-                        {
-                            _hudObjects.Add(docs[i].gameObject);
-                        }
-                        Debug.Log("[SignInferenceClient] Bound sign-inference-caption on MainLayout (Billboarding enabled).");
+                        Debug.Log("[SignInferenceClient] Bound subtitle-text for sign captions (world subtitle panel).");
                     }
                 }
             }
 
-            if (_subtitleLabel != null && _mainHudCaptionLabel != null)
+            if (_subtitleLabel != null)
             {
                 ApplyCaptionToSubtitle();
                 yield break;

@@ -335,6 +335,7 @@ public class App : MonoBehaviour
                 var signClient = FindObjectOfType<SignInferenceClient>();
                 if (_audioOn && signClient != null)
                 {
+                    signClient.ClearSignHistory("switch_to_asr");
                     signClient.SetSignCaptureActive(false);
                 }
 
@@ -347,7 +348,11 @@ public class App : MonoBehaviour
                         btnSign.text = "Sign Language";
                         btnSign.EnableInClassList("action-rail-btn-on", false);
                     }
-                    if (signClient != null) signClient.SetSignCaptureActive(false);
+                    if (signClient != null)
+                    {
+                        signClient.ClearSignHistory("switch_to_asr");
+                        signClient.SetSignCaptureActive(false);
+                    }
                 }
 
                 if (_translationToggleBtn != null)
@@ -442,6 +447,14 @@ public class App : MonoBehaviour
                 var signClient = FindObjectOfType<SignInferenceClient>();
                 if (signClient != null)
                 {
+                    if (_signOn)
+                    {
+                        signClient.ClearSignHistory("switch_to_slr");
+                    }
+                    else
+                    {
+                        signClient.ClearSignHistory("switch_off_slr");
+                    }
                     signClient.SetSignCaptureActive(_signOn);
                 }
             };
@@ -514,7 +527,12 @@ public class App : MonoBehaviour
                         _signToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
 
-                    FindObjectOfType<SignInferenceClient>()?.SetSignCaptureActive(false);
+                    var signClient = FindObjectOfType<SignInferenceClient>();
+                    if (signClient != null)
+                    {
+                        signClient.ClearSignHistory("switch_to_ita_asr");
+                        signClient.SetSignCaptureActive(false);
+                    }
                 }
 
                 if (_italianAsrOn && _audioOn)
@@ -749,6 +767,7 @@ public class App : MonoBehaviour
         var signClient = FindObjectOfType<SignInferenceClient>();
         if (signClient != null)
         {
+            signClient.ClearSignHistory("initialize_default_mode");
             signClient.SetSignCaptureActive(false);
         }
 

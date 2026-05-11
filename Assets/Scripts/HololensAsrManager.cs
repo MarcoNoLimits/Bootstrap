@@ -72,7 +72,7 @@ public class HololensAsrManager : MonoBehaviour
     [Tooltip("Transcribe URL: POST raw float32 PCM mono (little-endian), Content-Type application/octet-stream, header X-Sample-Rate matching _sampleRate (e.g. 16000). Response JSON { \"text\": \"...\" }.")]
     [SerializeField] private string _asrApiUrl = "https://thedeezat-asr-hearing-impaired-api.hf.space/audio";
     [Tooltip("Write detailed ASR logs to persistentDataPath/asr_debug.log. Keep off for faster runtime on device.")]
-    [SerializeField] private bool _writeAsrDebugFile = false;
+    [SerializeField] private bool _writeAsrDebugFile = true;
     [SerializeField] private int _sampleRate = 16000;
     [Header("Fixed-window streaming (HoloLens)")]
     [Tooltip("Send each POST using this many seconds of mic audio (clamped ≤ Max Chunk Seconds).")]
@@ -458,6 +458,12 @@ public class HololensAsrManager : MonoBehaviour
     }
 
     /// <summary>
+    /// <summary>Public wrapper so non-ASR-loop callers (Wizard / Hybrid NMT pipeline) can ship telemetry through the same channels.</summary>
+    public void LogPipelineTelemetryLine(string compactLine, string telemetryEvent)
+    {
+        LogClientTelemetry(compactLine, telemetryEvent, Mathf.Max(0, LatestAcceptedChunkId));
+    }
+
     /// Compact <c>[client] …</c> lines for Unity (optional) and HF <c>/client_log</c> (fire-and-forget JSON).
     /// </summary>
     private void LogClientTelemetry(string compactLine, string telemetryEvent, int chunkId)
