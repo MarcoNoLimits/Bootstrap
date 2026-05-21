@@ -239,7 +239,7 @@ public class SignInferenceClient : MonoBehaviour
     [SerializeField] private int maxCompletedSentences = 2;
     [SerializeField] private string noHandFriendlyMessage = "Show your hand to start signing";
     [Header("Local Word Correction (fast, no network)")]
-    [SerializeField] private bool enableLocalWordCorrection = true;
+    [SerializeField] private bool enableLocalWordCorrection = false;
     [Tooltip("Max edit distance for local correction candidate search.")]
     [SerializeField] private int localCorrectionMaxEditDistance = 1;
 
@@ -2378,7 +2378,7 @@ public class SignInferenceClient : MonoBehaviour
     }
 
     /// <summary>
-    /// Commits the live fingerspell buffer as one corrected word + trailing space in history and caption lines.
+    /// Commits the live fingerspell buffer as-is (no local spell correction) into history and caption lines.
     /// </summary>
     /// <returns>True if a word was committed.</returns>
     private bool TryFinalizeCurrentWordBuffer(int minLetters)
@@ -2388,7 +2388,7 @@ public class SignInferenceClient : MonoBehaviour
             return false;
         }
 
-        string finalizedWord = CorrectWordLocal(_currentWordBuffer);
+        string finalizedWord = _currentWordBuffer;
         AppendWordToCaption(finalizedWord);
         AppendFinalizedWordToHistory(finalizedWord);
         _currentWordBuffer = "";
@@ -2422,13 +2422,7 @@ public class SignInferenceClient : MonoBehaviour
 
         float away = Time.time - _lastHandSeenTime;
 
-        // Word boundary only — finalize the grey buffer into the visible white caption line.
-        // Sentence/soft-clear were wiping the spelling between letters; user wants letters to keep appending to the same string.
-        if (away >= autoSpaceNoHandSeconds)
-        {
-            TryFinalizeCurrentWordBuffer(minWordLengthForAutoSpace);
-        }
-
+        // Do not finalize on short no-hand gaps between letters; only end-of-sentence pause commits the buffer.
         if (away >= endSentenceNoHandSeconds && !_timeSentenceBreakIssuedThisNoHandStreak)
         {
             _timeSentenceBreakIssuedThisNoHandStreak = true;
@@ -2438,14 +2432,9 @@ public class SignInferenceClient : MonoBehaviour
 
     private void ProcessFrameBasedNoHandCaption()
     {
-        int autoF = Mathf.Max(1, autoSpaceNoHandFrames);
-        int endF = Mathf.Max(autoF, endSentenceNoHandFrames);
+        int endF = Mathf.Max(1, endSentenceNoHandFrames);
 
-        if (_noHandFrames >= autoF)
-        {
-            TryFinalizeCurrentWordBuffer(minWordLengthForAutoSpace);
-        }
-
+        // Do not finalize on short no-hand gaps between letters; only end-of-sentence frame count commits the buffer.
         if (_noHandFrames >= endF && !_legacySentenceBreakIssuedThisNoHandStreak)
         {
             _legacySentenceBreakIssuedThisNoHandStreak = true;

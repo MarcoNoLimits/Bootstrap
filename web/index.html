@@ -270,6 +270,18 @@
       white-space: pre-line;
       color: rgba(236, 245, 255, 0.96);
     }
+    .perf-values {
+      margin-top: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      padding: 6px;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre;
+      overflow: visible;
+      color: rgba(245, 251, 255, 0.98);
+    }
   </style>
 </head>
 <body>
@@ -302,15 +314,7 @@
         <input id="perf-load-min" type="number" min="0" step="0.1" value="0" />
       </label>
       <label>Feature tag
-        <select id="perf-feature">
-          <option value="auto" selected>Auto</option>
-          <option value="general">General</option>
-          <option value="asr">ASR</option>
-          <option value="sign">SL</option>
-          <option value="translation">Translation</option>
-          <option value="asr_translation">ASR+Translation</option>
-          <option value="sign_translation">SL+Translation</option>
-        </select>
+        <input id="perf-feature" type="text" value="asr" readonly />
       </label>
       <label>Notes
         <input id="perf-notes" type="text" value="" placeholder="e.g. lag blocked testing" />
@@ -325,6 +329,7 @@
     </div>
     <div id="perf-live">Run idle.</div>
     <div id="perf-last"></div>
+    <div id="perf-values" class="perf-values">No runs yet.</div>
   </div>
   <div id="status" class="status">Ready.</div>
   <button type="button" id="btn-clear-caption" class="btn-clear-caption" title="Clear caption text">Clear text</button>
@@ -449,6 +454,7 @@
       var perfClearBtn = document.getElementById('perf-clear');
       var perfLiveEl = document.getElementById('perf-live');
       var perfLastEl = document.getElementById('perf-last');
+      var perfValuesEl = document.getElementById('perf-values');
 
       var perfState = {
         running: false,
@@ -513,18 +519,20 @@
           r.notes || '',
         ].map(toCsvField).join(',');
       }
-      function detectActiveFeatureLabel() {
-        if (asrRunning && translationOn) return 'asr_translation';
-        if (signRunning && translationOn) return 'sign_translation';
-        if (asrRunning) return 'asr';
-        if (signRunning) return 'sign';
-        if (translationOn) return 'translation';
-        return 'general';
-      }
       function currentFeatureLabel() {
-        var manual = perfFeatureEl && perfFeatureEl.value ? String(perfFeatureEl.value).trim() : 'auto';
-        if (!manual || manual === 'auto') return detectActiveFeatureLabel();
-        return manual;
+        var value = perfFeatureEl && perfFeatureEl.value ? String(perfFeatureEl.value).trim() : 'asr';
+        return value || 'asr';
+      }
+      function renderPerfRunsSummary() {
+        if (!perfValuesEl) return;
+        var runs = getPerfRuns();
+        if (!runs.length) {
+          perfValuesEl.textContent = 'No runs yet.';
+          return;
+        }
+        var lines = [perfCsvHeader()];
+        for (var i = 0; i < runs.length; i++) lines.push(toCsvRow(runs[i]));
+        perfValuesEl.textContent = lines.join('\n');
       }
       function downloadTextFile(name, content) {
         try {
@@ -628,6 +636,7 @@
           ', startup_delay_min=' + result.startup_delay_min.toFixed(2);
         perfLiveEl.textContent = 'Run stopped. Saved locally (' + runs.length + ' total runs).';
         perfRunIdEl.value = String(result.run_id + 1);
+        renderPerfRunsSummary();
         return result;
       }
       function exportAllPerfRuns() {
@@ -679,6 +688,7 @@
         perfState.lastResult = null;
         perfLastEl.textContent = '';
         perfLiveEl.textContent = 'Cleared local run history.';
+        renderPerfRunsSummary();
       });
 
       // ASR — one phrase per pause (see ASR/src/web_realtime_remote.py); no overlapping POSTs while speaking.
@@ -1117,13 +1127,20 @@
       bindPress(btnAsr, async function() {
         try {
           if (asrRunning) {
+            if (perfState.running) stopPerfRun();
             await stopAsr();
           } else {
             if (signRunning) stopSign();
+            if (!perfState.running) startPerfRun();
             await startAsr();
           }
         }
-        catch (e) { console.error(e); await stopAsr(); setStatus('ASR start failed.'); }
+        catch (e) {
+          console.error(e);
+          if (perfState.running) stopPerfRun();
+          await stopAsr();
+          setStatus('ASR start failed.');
+        }
       });
       bindPress(btnItaAsr, async function() {
         if (signRunning) return;
@@ -1149,9 +1166,7 @@
 
       // Sign Language — MediaPipe in-browser; infer only when hand is large & confident enough.
       // Aligns with API defaults: stable_frames 6, min_conf 0.65, noise_frames 4, pause_ms 450, word_pause_ms 1800.
-      var SIGN_API_BASE = (typeof window !== 'undefined' && window.HOLOASSIST_SIGN_API_BASE) || 'https://mederbekaiana-sign-language.hf.space';
-      var SIGN_INFER_URL = (typeof window !== 'undefined' && window.HOLOASSIST_SIGN_API_URL) || (SIGN_API_BASE.replace(/\/+$/, '') + '/predict');
-      var SIGN_INFER_FALLBACK_URL = SIGN_API_BASE.replace(/\/+$/, '') + '/infer';
+      var SIGN_SPACE_ID = (typeof window !== 'undefined' && window.HOLOASSIST_SIGN_SPACE_ID) || 'mederbekaiana/Sign-Language';
       var SIGN_INFER_INTERVAL_MS = 154;
       var SIGN_MIN_HAND_AREA_FRAC = 0.05;
       var SIGN_MIN_HANDEDNESS_SCORE = 0.65;
@@ -1174,6 +1189,32 @@
       var SIGN_HOLD_TARGET_MS = 1100;
       var SIGN_DROP_HINT_MS = 450;
       var signCropSmooth = null;
+      var signGradioClient = null;
+      var signHandleFile = null;
+
+      async function ensureSignGradioClient() {
+        if (signGradioClient && signHandleFile) {
+          return { client: signGradioClient, handle_file: signHandleFile };
+        }
+        var mod = await import('https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js');
+        var Client = mod && mod.Client ? mod.Client : (mod && mod.default ? mod.default.Client : null);
+        var handleFileFn = mod && mod.handle_file ? mod.handle_file : (mod && mod.default ? mod.default.handle_file : null);
+        if (!Client || !handleFileFn) {
+          throw new Error('Failed to load Gradio client module.');
+        }
+        signGradioClient = await Client.connect(SIGN_SPACE_ID);
+        signHandleFile = handleFileFn;
+        return { client: signGradioClient, handle_file: signHandleFile };
+      }
+
+      function normalizeSignPredictResult(result) {
+        if (!result) return null;
+        var payload = Array.isArray(result && result.data) ? result.data[0] : result;
+        if (typeof payload === 'string') {
+          try { return JSON.parse(payload); } catch (_) { return null; }
+        }
+        return payload && typeof payload === 'object' ? payload : null;
+      }
 
       function setSignLiveHintVisible(on) {
         if (signTopBarEl) signTopBarEl.hidden = !on;
@@ -1362,37 +1403,18 @@
           signCtx.drawImage(signVideo, crop.sx, crop.sy, crop.side, crop.side, 0, 0, 224, 224);
           var blob = await new Promise(function(resolve) { signCanvas.toBlob(resolve, 'image/jpeg', 0.88); });
           if (!blob) return;
-          var data = null;
-          var form = new FormData();
-          form.append('image', blob, 'frame.jpg');
-          form.append('spell', 'true');
-          form.append('session_id', 'web-sign-session-' + String(currentToken));
-
-          // Browser-first path: multipart to /predict (avoids CORS preflight from image/jpeg).
-          var res = await fetch(SIGN_INFER_URL, { method: 'POST', body: form });
-          if (res.ok) {
-            data = await res.json();
-          } else {
-            // Unity-aligned fallback: raw JPEG to /predict.
-            var resRaw = await fetch(SIGN_INFER_URL, {
-              method: 'POST',
-              headers: { 'Content-Type': 'image/jpeg' },
-              body: blob
-            });
-            if (resRaw.ok) {
-              data = await resRaw.json();
-            } else {
-              // Legacy endpoint fallback: multipart to /infer.
-              var res2 = await fetch(SIGN_INFER_FALLBACK_URL, { method: 'POST', body: form });
-              if (!res2.ok) {
-                if (signRunning) {
-                  setStatus('Sign API failed: /predict(form)=' + res.status + ', /predict(raw)=' + resRaw.status + ', /infer=' + res2.status);
-                }
-                if (signLastServerPayload) renderSignCaption(signLastServerPayload);
-                return;
-              }
-              data = await res2.json();
+          var file = new File([blob], 'frame.jpg', { type: 'image/jpeg' });
+          var gradio = await ensureSignGradioClient();
+          var predictRes = await gradio.client.predict('/predict', {
+            img: gradio.handle_file(file)
+          });
+          var data = normalizeSignPredictResult(predictRes);
+          if (!data) {
+            if (signRunning) {
+              setStatus('Sign API failed: empty response from Gradio /predict.');
             }
+            if (signLastServerPayload) renderSignCaption(signLastServerPayload);
+            return;
           }
           if (!signRunning || currentToken !== signRunToken) return;
           if (!signFirstApiRoundTripDone) signFirstApiRoundTripDone = true;
@@ -1533,14 +1555,13 @@
         statusUpdateCount += 1;
         originalSetStatus(t);
       };
-      // Auto-start perf capture immediately on page open (user can still stop manually).
-      startPerfRun();
+      renderPerfRunsSummary();
       console.info('[API config]', {
         asr: ASR_URL_EN,
         asrItEn: ASR_URL_IT_EN,
         nmt: NMT_URL,
-        signPredict: SIGN_INFER_URL,
-        signFallback: SIGN_INFER_FALLBACK_URL
+        signSpace: SIGN_SPACE_ID,
+        signApiName: '/predict'
       });
       if (!supportsMediaDevices()) {
         setStatus('This browser does not expose media permissions (camera/mic APIs unavailable).');
