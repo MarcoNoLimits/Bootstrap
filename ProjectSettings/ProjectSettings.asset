@@ -13,7 +13,7 @@ PlayerSettings:
   useOnDemandResources: 0
   accelerometerFrequency: 60
   companyName: DefaultCompany
-  productName: Bootstrap
+  productName: BootstrapNMT
   defaultCursor: {fileID: 0}
   cursorHotspot: {x: 0, y: 0}
   m_SplashScreenBackgroundColor: {r: 0.13725491, g: 0.12156863, b: 0.1254902, a: 1}
@@ -142,10 +142,7 @@ PlayerSettings:
   visionOSBundleVersion: 1.0
   tvOSBundleVersion: 1.0
   bundleVersion: 0.1
-  preloadedAssets:
-  - {fileID: 649350072954278341, guid: 0c029c4b85903524fa0e58c3b60bcf27, type: 2}
-  - {fileID: 11400000, guid: ebdbe273ef56fed4ba0969230f35c671, type: 2}
-  - {fileID: 2780076455870585879, guid: 7c1f5755dabf6a74781cbd711324a6b0, type: 2}
+  preloadedAssets: []
   metroInputSource: 0
   wsaTransparentSwapchain: 0
   m_HolographicPauseOnTrackingLoss: 1
@@ -781,16 +778,16 @@ PlayerSettings:
   apiCompatibilityLevelPerPlatform: {}
   m_RenderingPath: 1
   m_MobileRenderingPath: 1
-  metroPackageName: Bootstrap
+  metroPackageName: BootstrapNMT
   metroPackageVersion: 1.0.0.0
   metroCertificatePath: Assets/WSATestCertificate.pfx
   metroCertificatePassword: 
   metroCertificateSubject: DefaultCompany
   metroCertificateIssuer: DefaultCompany
   metroCertificateNotAfter: 0057874d53e7dd01
-  metroApplicationDescription: Bootstrap
+  metroApplicationDescription: Bootstrap NMT
   wsaImages: {}
-  metroTileShortName: Bootstrap
+  metroTileShortName: Bootstrap NMT
   metroTileShowName: 0
   metroMediumTileShowName: 0
   metroLargeTileShowName: 0

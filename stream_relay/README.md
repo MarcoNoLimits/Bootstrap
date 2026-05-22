@@ -12,7 +12,7 @@ The built-in viewer uses HTTP polling — every frame is a separate request/resp
 
 ```bash
 # From the HoloLens IP (when deployed)
-python relay.py --source http://172.16.4.56:8080
+python relay.py --source http://172.16.6.45:8080
 
 # From localhost (when running in Unity Editor)
 python relay.py --source http://localhost:8080

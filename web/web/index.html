@@ -346,10 +346,19 @@
         var ctrl = new AbortController();
         nmtAbortController = ctrl;
         try {
-          var headers = { 'Content-Type': 'application/json' };
+          var headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          };
           if (NMT_API_KEY) headers['X-API-Key'] = NMT_API_KEY;
-          var body = { text: text, target_language: NMT_TARGET_LANG };
-          var res = await fetch(NMT_URL, {
+          var srcLang = NMT_TARGET_LANG === 'en' ? 'ita_Latn' : 'eng_Latn';
+          var tgtLang = NMT_TARGET_LANG === 'en' ? 'eng_Latn' : 'ita_Latn';
+          var body = { text: text, source_lang: srcLang, target_lang: tgtLang };
+          var targetUrl = NMT_URL;
+          if (targetUrl.toLowerCase().indexOf('json') === -1) {
+            targetUrl += (targetUrl.indexOf('?') === -1) ? '?json=1' : '&json=1';
+          }
+          var res = await fetch(targetUrl, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify(body),

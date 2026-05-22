@@ -6,9 +6,9 @@ public class App : MonoBehaviour
 {
     private static App _instance;
     public enum InputMode { None, Asr, Sign }
-    public static InputMode CurrentInputMode { get; private set; } = InputMode.None;
-    public static bool IsTranslationEnabled { get; private set; }
-    public static bool IsItalianTranslationEnabled { get; private set; }
+    public static InputMode CurrentInputMode { get; set; } = InputMode.None;
+    public static bool IsTranslationEnabled { get { return true; } set {} }
+    public static bool IsItalianTranslationEnabled { get { return true; } set {} }
     private GameObject _mainUI;
     private Camera _mainCam;
     
@@ -360,25 +360,14 @@ public class App : MonoBehaviour
                     _translationToggleBtn.style.display = _audioOn ? DisplayStyle.Flex : DisplayStyle.None;
                     if (_audioOn)
                     {
-                        _translationToggleBtn.text = _translationOn ? "Italian Translation · On" : "Italian Translation · Off";
-                        _translationToggleBtn.EnableInClassList("action-rail-btn-on", _translationOn);
-                    }
-                    if (!_audioOn)
-                    {
-                        _translationOn = false;
-                        IsTranslationEnabled = false;
-                        _translationToggleBtn.text = "Italian Translation · Off";
-                        _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                        _translationToggleBtn.text = "Italian Translation · On";
+                        _translationToggleBtn.EnableInClassList("action-rail-btn-on", true);
                     }
                 }
 
                 if (_itaTranslationToggleBtn != null)
                 {
                     _itaTranslationToggleBtn.style.display = DisplayStyle.None;
-                    _italianTranslationOn = false;
-                    IsItalianTranslationEnabled = false;
-                    _itaTranslationToggleBtn.text = "English Translation · Off";
-                    _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", false);
                 }
 
             };
@@ -464,34 +453,12 @@ public class App : MonoBehaviour
         if (_translationToggleBtn != null)
         {
             _translationToggleBtn.style.display = DisplayStyle.None;
-            _translationToggleBtn.clicked += () =>
-            {
-                if (!_audioOn) return;
-                _translationOn = !_translationOn;
-                IsTranslationEnabled = _audioOn && _translationOn;
-                _translationToggleBtn.text = _translationOn ? "Italian Translation · On" : "Italian Translation · Off";
-                _translationToggleBtn.EnableInClassList("action-rail-btn-on", _translationOn);
-                // Translation toggle must never stop ASR capture.
-                SetAsrCaptureActive(_audioOn || _italianAsrOn);
-                WizardOfOzClient.Instance?.NotifyTranslationDisplayModeChanged();
-            };
         }
 
         _itaTranslationToggleBtn = root.Q<Button>("btn-ita-translation-toggle");
         if (_itaTranslationToggleBtn != null)
         {
             _itaTranslationToggleBtn.style.display = DisplayStyle.None;
-            _itaTranslationToggleBtn.clicked += () =>
-            {
-                if (!_italianAsrOn) return;
-                _italianTranslationOn = !_italianTranslationOn;
-                IsItalianTranslationEnabled = _italianAsrOn && _italianTranslationOn;
-                _itaTranslationToggleBtn.text = _italianTranslationOn ? "English Translation · On" : "English Translation · Off";
-                _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", _italianTranslationOn);
-                // Translation toggle must never stop ASR capture.
-                SetAsrCaptureActive(_audioOn || _italianAsrOn);
-                WizardOfOzClient.Instance?.NotifyTranslationDisplayModeChanged();
-            };
         }
 
         _itaToggleBtn = root.Q<Button>("btn-ita-asr-toggle");
@@ -546,10 +513,7 @@ public class App : MonoBehaviour
 
                     if (_translationToggleBtn != null)
                     {
-                        _translationOn = false;
                         _translationToggleBtn.style.display = DisplayStyle.None;
-                        _translationToggleBtn.text = "Italian Translation · Off";
-                        _translationToggleBtn.EnableInClassList("action-rail-btn-on", false);
                     }
                 }
 
@@ -558,15 +522,8 @@ public class App : MonoBehaviour
                     _itaTranslationToggleBtn.style.display = _italianAsrOn ? DisplayStyle.Flex : DisplayStyle.None;
                     if (_italianAsrOn)
                     {
-                        _itaTranslationToggleBtn.text = _italianTranslationOn ? "English Translation · On" : "English Translation · Off";
-                        _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", _italianTranslationOn);
-                    }
-                    if (!_italianAsrOn)
-                    {
-                        _italianTranslationOn = false;
-                        IsItalianTranslationEnabled = false;
-                        _itaTranslationToggleBtn.text = "English Translation · Off";
-                        _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", false);
+                        _itaTranslationToggleBtn.text = "English Translation · On";
+                        _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", true);
                     }
                 }
 
@@ -611,6 +568,24 @@ public class App : MonoBehaviour
     private void SyncItalianToggleFromWizard(bool enabled)
     {
         _italianAsrOn = enabled;
+        if (enabled)
+        {
+            _italianTranslationOn = true;
+            IsItalianTranslationEnabled = true;
+            _audioOn = false;
+            _signOn = false;
+        }
+        else
+        {
+            _italianTranslationOn = false;
+            IsItalianTranslationEnabled = false;
+        }
+
+        CurrentInputMode = _italianAsrOn
+            ? InputMode.Asr
+            : (_audioOn ? InputMode.Asr : (_signOn ? InputMode.Sign : InputMode.None));
+        IsTranslationEnabled = _audioOn && _translationOn;
+
         if (_itaToggleBtn == null)
         {
             return;
@@ -619,28 +594,38 @@ public class App : MonoBehaviour
         _itaToggleBtn.text = enabled ? "Italian Captions · On" : "Switch to Italian Captions";
         _itaToggleBtn.EnableInClassList("action-rail-btn-on", enabled);
 
+        if (enabled)
+        {
+            if (_asrToggleBtn != null)
+            {
+                _asrToggleBtn.text = "English Captions";
+                _asrToggleBtn.EnableInClassList("action-rail-btn-on", false);
+            }
+            if (_signToggleBtn != null)
+            {
+                _signToggleBtn.text = "Sign Language";
+                _signToggleBtn.EnableInClassList("action-rail-btn-on", false);
+            }
+        }
+
         if (_itaTranslationToggleBtn != null)
         {
             _itaTranslationToggleBtn.style.display = enabled ? DisplayStyle.Flex : DisplayStyle.None;
             if (enabled)
             {
-                _italianTranslationOn = true;
-                IsItalianTranslationEnabled = true;
                 _itaTranslationToggleBtn.text = "English Translation · On";
                 _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", true);
-            }
-            else
-            {
-                _italianTranslationOn = false;
-                IsItalianTranslationEnabled = false;
-                _itaTranslationToggleBtn.text = "English Translation · Off";
-                _itaTranslationToggleBtn.EnableInClassList("action-rail-btn-on", false);
             }
         }
 
         if (_translationToggleBtn != null)
         {
             _translationToggleBtn.style.display = (_audioOn && !enabled) ? DisplayStyle.Flex : DisplayStyle.None;
+            if (_audioOn && !enabled)
+            {
+                _translationToggleBtn.text = "Italian Translation · On";
+                _translationToggleBtn.EnableInClassList("action-rail-btn-on", true);
+            }
         }
 
         if (enabled)

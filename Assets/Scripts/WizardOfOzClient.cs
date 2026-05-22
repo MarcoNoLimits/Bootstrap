@@ -5,6 +5,7 @@ using UnityEngine.Windows.Speech;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -338,6 +339,14 @@ public class WizardOfOzClient : MonoBehaviour
     /// <summary>
     /// Queue a full finalized ASR utterance for NMT. Does not read live ASR buffers after enqueue.
     /// </summary>
+    public static string NormalizeForDuplicationCheck(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return string.Empty;
+        string lower = s.ToLowerInvariant().Trim();
+        string clean = Regex.Replace(lower, @"[.,?!;:''\""]", "");
+        return Regex.Replace(clean, @"\s+", " ").Trim();
+    }
+
     private void EnqueueFinalizedSentenceForTranslation(string finalizedUtterance)
     {
         if (_uiManager == null || _voice == null || _network == null)
@@ -349,16 +358,43 @@ public class WizardOfOzClient : MonoBehaviour
         }
 
         string immutable = (finalizedUtterance ?? string.Empty).Trim();
-        if (string.IsNullOrEmpty(immutable))
+        string normIncoming = NormalizeForDuplicationCheck(immutable);
+        if (string.IsNullOrEmpty(normIncoming))
         {
             LogNmtTelemetry("[nmt] ENQUEUE_SKIP reason=empty_text", "ENQUEUE_SKIP");
             return;
         }
 
-        if (string.Equals(immutable, _lastTranslatedSentence, StringComparison.Ordinal))
+        if (string.Equals(normIncoming, NormalizeForDuplicationCheck(_lastTranslatedSentence), StringComparison.Ordinal))
         {
             LogNmtTelemetry(
                 $"[nmt] ENQUEUE_SKIP reason=duplicate text='{EscapeTelemetryQuotes(immutable)}'",
+                "ENQUEUE_SKIP");
+            return;
+        }
+
+        bool isAlreadyPending = false;
+        foreach (var pending in _pendingTranslations)
+        {
+            if (string.Equals(normIncoming, NormalizeForDuplicationCheck(pending), StringComparison.Ordinal))
+            {
+                isAlreadyPending = true;
+                break;
+            }
+        }
+
+        if (isAlreadyPending)
+        {
+            LogNmtTelemetry(
+                $"[nmt] ENQUEUE_SKIP reason=already_pending text='{EscapeTelemetryQuotes(immutable)}'",
+                "ENQUEUE_SKIP");
+            return;
+        }
+
+        if (string.Equals(normIncoming, NormalizeForDuplicationCheck(_finalizedSentenceForTranslationInFlight), StringComparison.Ordinal))
+        {
+            LogNmtTelemetry(
+                $"[nmt] ENQUEUE_SKIP reason=already_in_flight text='{EscapeTelemetryQuotes(immutable)}'",
                 "ENQUEUE_SKIP");
             return;
         }
@@ -964,6 +1000,10 @@ public class WizardOfOzClient : MonoBehaviour
         {
             Debug.LogError("[WizardOfOz] ASR cannot start: subtitle UIManager not ready after wait.");
             _asrActive = false;
+            if (App.CurrentInputMode == App.InputMode.Asr)
+            {
+                App.CurrentInputMode = App.InputMode.None;
+            }
             yield break;
         }
 
@@ -977,6 +1017,7 @@ public class WizardOfOzClient : MonoBehaviour
 
         if (_asrActive)
         {
+            App.CurrentInputMode = App.InputMode.Asr;
             EnsureManagersForVoice();
             if (_uiManager == null)
             {
@@ -988,6 +1029,10 @@ public class WizardOfOzClient : MonoBehaviour
             return;
         }
 
+        if (App.CurrentInputMode == App.InputMode.Asr)
+        {
+            App.CurrentInputMode = App.InputMode.None;
+        }
         _listeningStallDeadline = -1f;
         _nextStallMessageAllowedTime = 0f;
         _asrAwaitingTranslation = false;
@@ -1254,6 +1299,7 @@ public class NetworkManager
 {
     private readonly string _baseUrl;
     private readonly string _apiKey;
+    private readonly HttpClient _client;
     private DateTime _nextConnectionLogAllowedAt = DateTime.MinValue;
     private int _translationRequestSeq;
 
@@ -1261,6 +1307,8 @@ public class NetworkManager
     {
         _baseUrl = baseUrl != null ? baseUrl.Trim().TrimEnd('/') : "";
         _apiKey = apiKey != null ? apiKey.Trim() : "";
+        _client = new HttpClient();
+        _client.Timeout = TimeSpan.FromSeconds(15);
     }
 
     public void SendTranslationRequest(string text, Action<string> cb) {
@@ -1280,23 +1328,36 @@ public class NetworkManager
 
         string requestId = "nmt-" + System.Threading.Interlocked.Increment(ref _translationRequestSeq).ToString("D4");
         try {
-            using (var client = new HttpClient())
+            string url = _baseUrl + "/translate";
+            string translated = await TranslateOnce(_client, url, text, sourceLang, targetLang, requestId);
+            string normText = WizardOfOzClient.NormalizeForDuplicationCheck(text);
+            if (string.IsNullOrWhiteSpace(translated) || string.Equals(WizardOfOzClient.NormalizeForDuplicationCheck(translated), normText, StringComparison.Ordinal))
             {
-                client.Timeout = TimeSpan.FromSeconds(70);
-                string url = _baseUrl + "/translate";
-                string translated = await TranslateOnce(client, url, text, sourceLang, targetLang, requestId);
-                if (string.IsNullOrWhiteSpace(translated) || string.Equals(translated, text, StringComparison.Ordinal))
+                // HF Spaces may cold-start; retry up to 3 times after increasing delays.
+                int maxRetries = 3;
+                for (int attempt = 1; attempt <= maxRetries; attempt++)
                 {
-                    // HF Spaces may cold-start; retry once.
-                    translated = await TranslateOnce(client, url, text, sourceLang, targetLang, requestId);
+                    int delayMs = attempt * 3000;
+                    Debug.Log($"[NetworkManager] {requestId} attempt {attempt} failed or returned source text. Cold start suspected. Waiting {delayMs} ms before retry...");
+                    await System.Threading.Tasks.Task.Delay(delayMs);
+                    translated = await TranslateOnce(_client, url, text, sourceLang, targetLang, requestId);
+                    if (!string.IsNullOrWhiteSpace(translated) && !string.Equals(WizardOfOzClient.NormalizeForDuplicationCheck(translated), normText, StringComparison.Ordinal))
+                    {
+                        break;
+                    }
                 }
-
-                Debug.Log("[NetworkManager] " + requestId + " complete.");
-                cb?.Invoke(string.IsNullOrWhiteSpace(translated) ? text : translated);
             }
+
+            Debug.Log("[NetworkManager] " + requestId + " complete.");
+            cb?.Invoke(string.IsNullOrWhiteSpace(translated) ? text : translated);
         } catch (Exception e) {
             if (DateTime.UtcNow >= _nextConnectionLogAllowedAt) {
                 Debug.LogWarning("[NetworkManager] " + requestId + " translation server unreachable at " + _baseUrl + "/translate. Keeping ASR text. " + e.Message);
+                try
+                {
+                    HololensAsrManager.Instance?.LogPipelineTelemetryLine("[nmt] EXCEPTION id=" + requestId + " msg=" + e.Message, "EXCEPTION");
+                }
+                catch {}
                 _nextConnectionLogAllowedAt = DateTime.UtcNow.AddSeconds(8);
             }
             cb?.Invoke(text);
@@ -1306,7 +1367,11 @@ public class NetworkManager
     private static string EscapeJsonString(string raw)
     {
         if (string.IsNullOrEmpty(raw)) return "";
-        return raw.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return raw.Replace("\\", "\\\\")
+                  .Replace("\"", "\\\"")
+                  .Replace("\n", "\\n")
+                  .Replace("\r", "\\r")
+                  .Replace("\t", "\\t");
     }
 
     private static string ExtractTranslation(string json)
@@ -1338,67 +1403,98 @@ public class NetworkManager
         string targetLang,
         string requestId)
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, url);
-        string body = "{\"text\":\"" + EscapeJsonString(text) + "\"";
-        if (!string.IsNullOrWhiteSpace(sourceLang))
-            body += ",\"source_lang\":\"" + EscapeJsonString(sourceLang) + "\"";
-        if (!string.IsNullOrWhiteSpace(targetLang))
-            body += ",\"target_lang\":\"" + EscapeJsonString(targetLang) + "\"";
-        body += "}";
-        request.Content = new StringContent(body, Encoding.UTF8, "application/json");
-        if (!string.IsNullOrWhiteSpace(_apiKey))
-        {
-            request.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
-        }
-
-        // Echoed back as `request_id` in `TranslateResponse` (see nmt_http_api.py).
-        request.Headers.TryAddWithoutValidation("X-Request-Id", requestId);
-
-        var resp = await client.SendAsync(request);
-        var responseBody = await resp.Content.ReadAsStringAsync();
-        if (!string.IsNullOrEmpty(responseBody))
-        {
-            responseBody = responseBody.TrimStart('\uFEFF', ' ', '\t', '\r', '\n');
-        }
-        string compactBody = (responseBody ?? string.Empty);
-        if (compactBody.Length > 280) compactBody = compactBody.Substring(0, 280) + "…";
-
         try
         {
-            HololensAsrManager.Instance?.LogPipelineTelemetryLine(
-                "[nmt] HTTP id=" + requestId + " status=" + (int)resp.StatusCode +
-                " src_lang=" + (sourceLang ?? "auto") + " tgt_lang=" + (targetLang ?? "auto") +
-                " body=" + compactBody.Replace("\n", " ").Replace("\r", " "),
-                "HTTP");
-        }
-        catch
-        {
-        }
-
-        if (!resp.IsSuccessStatusCode)
-        {
-            if (DateTime.UtcNow >= _nextConnectionLogAllowedAt)
+            if (string.IsNullOrWhiteSpace(sourceLang) || string.IsNullOrWhiteSpace(targetLang))
             {
-                Debug.LogWarning("[NetworkManager] " + requestId + " NMT translate failed HTTP " + (int)resp.StatusCode + " at " + url + ". " + responseBody);
-                _nextConnectionLogAllowedAt = DateTime.UtcNow.AddSeconds(8);
+                bool isItalian = WizardOfOzClient.Instance != null && WizardOfOzClient.Instance.IsItalianLocalAsrEnabled;
+                sourceLang = isItalian ? "ita_Latn" : "eng_Latn";
+                targetLang = isItalian ? "eng_Latn" : "ita_Latn";
             }
-            return text;
-        }
 
-        string translated = ExtractTranslation(responseBody);
-        if (string.IsNullOrWhiteSpace(translated))
-        {
+            string targetUrl = url ?? "";
+            if (!targetUrl.ToLowerInvariant().Contains("json"))
+            {
+                targetUrl += targetUrl.Contains("?") ? "&json=1" : "?json=1";
+            }
+
+            var request = new HttpRequestMessage(HttpMethod.Post, targetUrl);
+            string body = "{\"text\":\"" + EscapeJsonString(text) + "\"";
+            if (!string.IsNullOrWhiteSpace(sourceLang))
+                body += ",\"source_lang\":\"" + EscapeJsonString(sourceLang) + "\"";
+            if (!string.IsNullOrWhiteSpace(targetLang))
+                body += ",\"target_lang\":\"" + EscapeJsonString(targetLang) + "\"";
+            body += "}";
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            if (!string.IsNullOrWhiteSpace(_apiKey))
+            {
+                request.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
+            }
+
+            // Echoed back as `request_id` in `TranslateResponse` (see nmt_http_api.py).
+            request.Headers.TryAddWithoutValidation("X-Request-Id", requestId);
+            request.Headers.TryAddWithoutValidation("Accept", "application/json");
+
+            var resp = await client.SendAsync(request);
+            var responseBody = await resp.Content.ReadAsStringAsync();
+            if (!string.IsNullOrEmpty(responseBody))
+            {
+                responseBody = responseBody.TrimStart('\uFEFF', ' ', '\t', '\r', '\n');
+            }
+            string compactBody = (responseBody ?? string.Empty);
+            if (compactBody.Length > 280) compactBody = compactBody.Substring(0, 280) + "…";
+
             try
             {
                 HololensAsrManager.Instance?.LogPipelineTelemetryLine(
-                    "[nmt] PARSE_FAIL id=" + requestId + " no recognized translation key in response; falling back to source.",
-                    "PARSE_FAIL");
+                    "[nmt] HTTP id=" + requestId + " status=" + (int)resp.StatusCode +
+                    " src_lang=" + (sourceLang ?? "auto") + " tgt_lang=" + (targetLang ?? "auto") +
+                    " body=" + compactBody.Replace("\n", " ").Replace("\r", " "),
+                    "HTTP");
             }
             catch
             {
             }
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                if (DateTime.UtcNow >= _nextConnectionLogAllowedAt)
+                {
+                    Debug.LogWarning("[NetworkManager] " + requestId + " NMT translate failed HTTP " + (int)resp.StatusCode + " at " + url + ". " + responseBody);
+                    _nextConnectionLogAllowedAt = DateTime.UtcNow.AddSeconds(8);
+                }
+                return text;
+            }
+
+            string translated = ExtractTranslation(responseBody);
+            if (string.IsNullOrWhiteSpace(translated))
+            {
+                try
+                {
+                    HololensAsrManager.Instance?.LogPipelineTelemetryLine(
+                        "[nmt] PARSE_FAIL id=" + requestId + " no recognized translation key in response; falling back to source.",
+                        "PARSE_FAIL");
+                }
+                catch
+                {
+                }
+            }
+            return string.IsNullOrWhiteSpace(translated) ? text : translated;
         }
-        return string.IsNullOrWhiteSpace(translated) ? text : translated;
+        catch (Exception e)
+        {
+            if (DateTime.UtcNow >= _nextConnectionLogAllowedAt)
+            {
+                Debug.LogWarning("[NetworkManager] " + requestId + " TranslateOnce exception: " + e.Message);
+                try
+                {
+                    HololensAsrManager.Instance?.LogPipelineTelemetryLine("[nmt] EXCEPTION id=" + requestId + " TranslateOnce msg=" + e.Message, "EXCEPTION");
+                }
+                catch {}
+                _nextConnectionLogAllowedAt = DateTime.UtcNow.AddSeconds(8);
+            }
+            return text;
+        }
     }
 }
 
