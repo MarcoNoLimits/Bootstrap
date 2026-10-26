@@ -74,3 +74,9 @@ UWP/
 
 # Unity recordings / captures
 Recordings/
+
+# Local logs and debug output (written at runtime, not source)
+.vs/
+*.log
+UpgradeLog*.htm
+sent_infer_frames/
