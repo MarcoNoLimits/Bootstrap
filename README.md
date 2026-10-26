@@ -52,7 +52,7 @@ flowchart LR
 | HoloLens 2 client | this repository |
 | Translation engine | [MarcoNoLimits/NMT-MenKan](https://github.com/MarcoNoLimits/NMT-MenKan) · model [`marconolimits/en-it-nmt-ct2`](https://huggingface.co/marconolimits/en-it-nmt-ct2) |
 | Speech recognition | model [`Thedeezat/ASR-Hearing-Impaired`](https://huggingface.co/Thedeezat/ASR-Hearing-Impaired) · Space [`Thedeezat/ASR-Hearing-Impaired-API`](https://huggingface.co/spaces/Thedeezat/ASR-Hearing-Impaired-API) |
-| Sign recognition (word level, experimental) | [MarcoNoLimits/Sign-Language-GISLR](https://github.com/MarcoNoLimits/Sign-Language-GISLR) |
+| Sign recognition (ASL fingerspelling) | Space [`mederbekaiana/Sign-Language`](https://huggingface.co/spaces/mederbekaiana/Sign-Language) |
 
 ## Performance study: Unity on HoloLens vs WebXR
 
